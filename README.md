@@ -145,29 +145,6 @@ func main() {
 See [DESIGN.md](./DESIGN.md) for the longer-form write-up and
 [ROADMAP.md](./ROADMAP.md) for phases.
 
-## Releasing
-
-llmgate is a pure Go module — "publishing" is just pushing a semver
-tag. The release workflow (`.github/workflows/release.yml`) does the
-rest:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-On tag push, CI validates the tag is valid Go semver, re-runs
-`go vet` / `go build` / `go test -race`, cuts a GitHub release with
-auto-generated notes, and warms `proxy.golang.org` so the new version
-shows up on [pkg.go.dev](https://pkg.go.dev/github.com/hallelx2/llmgate)
-immediately instead of waiting for the next proxy scan.
-
-Consumers install it the normal way:
-
-```bash
-go get github.com/hallelx2/llmgate@latest
-```
-
 ## License
 
 Apache 2.0. See [LICENSE](./LICENSE).
