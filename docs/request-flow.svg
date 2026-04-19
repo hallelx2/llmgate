@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 420" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13">
+  <style>
+    .box { fill: #ffffff; stroke: #1f2937; stroke-width: 1.5; rx: 6; }
+    .title { font-weight: 700; font-size: 13px; fill: #111827; }
+    .sub { fill: #4b5563; font-size: 11px; }
+    .accent { fill: #eef2ff; stroke: #6366f1; }
+    .ok { fill: #ecfdf5; stroke: #10b981; }
+    .fail { fill: #fef2f2; stroke: #ef4444; }
+    .edge { stroke: #4b5563; stroke-width: 1.2; fill: none; marker-end: url(#arr); }
+    .label { fill: #6b7280; font-size: 11px; }
+  </style>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
+    </marker>
+  </defs>
+
+  <text x="20" y="28" class="title" font-size="17">Request flow — retry + fallback + cost</text>
+  <text x="20" y="46" class="sub">One Complete() call traced through the middleware stack.</text>
+
+  <!-- Row of steps -->
+  <rect x="20" y="80" width="150" height="70" class="box accent"/>
+  <text x="95" y="105" text-anchor="middle" class="title">Complete(req)</text>
+  <text x="95" y="124" text-anchor="middle" class="sub">caller enters</text>
+  <text x="95" y="140" text-anchor="middle" class="sub">via Client iface</text>
+
+  <rect x="200" y="80" width="150" height="70" class="box"/>
+  <text x="275" y="105" text-anchor="middle" class="title">WithCache</text>
+  <text x="275" y="124" text-anchor="middle" class="sub">hash(model,msgs,…)</text>
+  <text x="275" y="140" text-anchor="middle" class="sub">hit → FromCache=true</text>
+
+  <rect x="380" y="80" width="150" height="70" class="box"/>
+  <text x="455" y="105" text-anchor="middle" class="title">WithBudget</text>
+  <text x="455" y="124" text-anchor="middle" class="sub">pre-check USD cap</text>
+  <text x="455" y="140" text-anchor="middle" class="sub">or ErrBudgetExceeded</text>
+
+  <rect x="560" y="80" width="150" height="70" class="box"/>
+  <text x="635" y="105" text-anchor="middle" class="title">WithRetries</text>
+  <text x="635" y="124" text-anchor="middle" class="sub">Classify(err) decides</text>
+  <text x="635" y="140" text-anchor="middle" class="sub">exp backoff + jitter</text>
+
+  <rect x="740" y="80" width="160" height="70" class="box"/>
+  <text x="820" y="105" text-anchor="middle" class="title">Router</text>
+  <text x="820" y="124" text-anchor="middle" class="sub">primary → fallback</text>
+  <text x="820" y="140" text-anchor="middle" class="sub">OnRateLimit / Transient</text>
+
+  <path d="M170,115 L200,115" class="edge"/>
+  <path d="M350,115 L380,115" class="edge"/>
+  <path d="M530,115 L560,115" class="edge"/>
+  <path d="M710,115 L740,115" class="edge"/>
+
+  <!-- Provider row -->
+  <rect x="200" y="220" width="150" height="60" class="box ok"/>
+  <text x="275" y="245" text-anchor="middle" class="title">Anthropic</text>
+  <text x="275" y="264" text-anchor="middle" class="sub">200 OK</text>
+
+  <rect x="380" y="220" width="150" height="60" class="box fail"/>
+  <text x="455" y="245" text-anchor="middle" class="title">OpenAI</text>
+  <text x="455" y="264" text-anchor="middle" class="sub">429 rate limit</text>
+
+  <rect x="560" y="220" width="150" height="60" class="box ok"/>
+  <text x="635" y="245" text-anchor="middle" class="title">Gemini</text>
+  <text x="635" y="264" text-anchor="middle" class="sub">200 OK (fallback)</text>
+
+  <path d="M820,150 L275,220" class="edge"/>
+  <path d="M820,150 L455,220" class="edge"/>
+  <path d="M820,150 L635,220" class="edge"/>
+
+  <!-- Response -->
+  <rect x="300" y="320" width="320" height="70" class="box accent"/>
+  <text x="460" y="345" text-anchor="middle" class="title">Response</text>
+  <text x="460" y="364" text-anchor="middle" class="sub">Content • Usage.{In,Out,Total,CostUSD}</text>
+  <text x="460" y="380" text-anchor="middle" class="sub">FinishReason • FromCache • Model</text>
+
+  <path d="M275,280 L420,320" class="edge"/>
+  <path d="M635,280 L500,320" class="edge"/>
+
+  <text x="440" y="210" class="label">fallback policy picks next client</text>
+</svg>

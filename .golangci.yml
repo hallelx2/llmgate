@@ -1,0 +1,37 @@
+# golangci-lint config for llmgate.
+# Small, opinionated, fast. Run locally: golangci-lint run ./...
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - revive
+    - bodyclose
+    - gocritic
+    - unconvert
+
+linters-settings:
+  revive:
+    rules:
+      - name: exported
+        arguments: ["checkPrivateReceivers", "sayRepetitiveInsteadOfStutters"]
+  goimports:
+    local-prefixes: github.com/hallelx2/llmgate
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    - path: _test\.go
+      linters: [errcheck, revive]
