@@ -1,6 +1,11 @@
 package llmgate
 
-import "context"
+import (
+	"context"
+	"fmt"
+
+	lcgoogleai "github.com/tmc/langchaingo/llms/googleai"
+)
 
 // GeminiConfig configures the Gemini client.
 type GeminiConfig struct {
@@ -9,22 +14,30 @@ type GeminiConfig struct {
 	ReasoningModel string
 }
 
-// Gemini is a Google-backed Client.
-type Gemini struct{ cfg GeminiConfig }
-
-// NewGemini constructs a new Gemini client.
-func NewGemini(cfg GeminiConfig) *Gemini {
-	if cfg.Model == "" {
-		cfg.Model = "gemini-2.0-flash"
+// NewGemini constructs a Client backed by langchaingo's googleai adapter.
+//
+// Unlike Anthropic and OpenAI, the googleai factory needs a context because
+// it authenticates up front. We use a Background context for the client
+// construction; per-call contexts still flow into Complete as normal.
+func NewGemini(cfg GeminiConfig) (Client, error) {
+	opts := []lcgoogleai.Option{}
+	if cfg.APIKey != "" {
+		opts = append(opts, lcgoogleai.WithAPIKey(cfg.APIKey))
 	}
-	return &Gemini{cfg: cfg}
-}
+	model := cfg.Model
+	if model == "" {
+		model = "gemini-2.5-flash"
+	}
+	opts = append(opts, lcgoogleai.WithDefaultModel(model))
 
-func (g *Gemini) Complete(ctx context.Context, req Request) (*Response, error) {
-	// TODO(phase-1): swap to a langchaingo/llms/googleai adapter.
-	return nil, ErrNotImplemented
-}
-
-func (g *Gemini) CountTokens(ctx context.Context, text string) (int, error) {
-	return len(text) / 4, nil
+	m, err := lcgoogleai.New(context.Background(), opts...)
+	if err != nil {
+		return nil, fmt.Errorf("llmgate/gemini: %w", err)
+	}
+	return &adapter{
+		m:        m,
+		provider: ProviderGemini,
+		model:    model,
+		modelSet: cfg.Model != "",
+	}, nil
 }
