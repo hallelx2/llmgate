@@ -15,7 +15,7 @@ import (
 type FallbackPolicy func(err error) bool
 
 // OnRateLimit falls over on 429s only.
-var OnRateLimit FallbackPolicy = func(err error) bool { return llmgate.IsRateLimited(err) }
+var OnRateLimit FallbackPolicy = llmgate.IsRateLimited
 
 // OnTransient falls over on 429s and transient/timeout errors.
 var OnTransient FallbackPolicy = func(err error) bool {
@@ -54,6 +54,8 @@ type router struct {
 	fallback FallbackPolicy
 }
 
+// Complete tries each configured client in order, falling over according
+// to the router's policy until one succeeds or the policy declines to fall over.
 func (r *router) Complete(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 	var lastErr error
 	for _, c := range r.clients {
@@ -72,6 +74,8 @@ func (r *router) Complete(ctx context.Context, req llmgate.Request) (*llmgate.Re
 	return nil, lastErr
 }
 
+// CountTokens counts tokens using the first (primary) client. Fallbacks are
+// intentionally not consulted — token counts are meant to be deterministic.
 func (r *router) CountTokens(ctx context.Context, text string) (int, error) {
 	return r.clients[0].CountTokens(ctx, text)
 }

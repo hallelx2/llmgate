@@ -5,9 +5,10 @@ package openai
 import (
 	"fmt"
 
+	lcopenai "github.com/tmc/langchaingo/llms/openai"
+
 	"github.com/hallelx2/llmgate"
 	"github.com/hallelx2/llmgate/internal/adapter"
-	lcopenai "github.com/tmc/langchaingo/llms/openai"
 )
 
 // Config configures the OpenAI client.

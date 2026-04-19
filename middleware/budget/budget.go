@@ -57,6 +57,8 @@ type budgetClient struct {
 	dayStart time.Time
 }
 
+// Complete rejects the call with ErrExceeded when the configured cap has been
+// reached; otherwise it forwards to the inner client and debits the cost.
 func (b *budgetClient) Complete(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 	if err := b.check(); err != nil {
 		return nil, err
@@ -69,6 +71,7 @@ func (b *budgetClient) Complete(ctx context.Context, req llmgate.Request) (*llmg
 	return resp, nil
 }
 
+// CountTokens passes through to the inner client without touching the budget.
 func (b *budgetClient) CountTokens(ctx context.Context, text string) (int, error) {
 	return b.inner.CountTokens(ctx, text)
 }

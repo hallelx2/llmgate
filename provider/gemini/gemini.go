@@ -6,9 +6,10 @@ import (
 	"context"
 	"fmt"
 
+	lcgoogleai "github.com/tmc/langchaingo/llms/googleai"
+
 	"github.com/hallelx2/llmgate"
 	"github.com/hallelx2/llmgate/internal/adapter"
-	lcgoogleai "github.com/tmc/langchaingo/llms/googleai"
 )
 
 // Config configures the Gemini client.

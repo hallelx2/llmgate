@@ -5,9 +5,10 @@ package anthropic
 import (
 	"fmt"
 
+	lcanthropic "github.com/tmc/langchaingo/llms/anthropic"
+
 	"github.com/hallelx2/llmgate"
 	"github.com/hallelx2/llmgate/internal/adapter"
-	lcanthropic "github.com/tmc/langchaingo/llms/anthropic"
 )
 
 // Config configures the Anthropic client.

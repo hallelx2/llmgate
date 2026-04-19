@@ -42,7 +42,8 @@ func main() {
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "complete:", err)
-		os.Exit(1)
+		cancel()
+		os.Exit(1) //nolint:gocritic // cancel() called above; defer is for the happy path
 	}
 
 	fmt.Println("--- reply ---")

@@ -49,6 +49,8 @@ type cacheClient struct {
 	c     *lruCache
 }
 
+// Complete returns a cached response when one is available for the request
+// shape; on a miss it forwards to the inner client and stores the result.
 func (c *cacheClient) Complete(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 	key := cacheKey(req)
 	if resp, ok := c.c.get(key); ok {
@@ -67,6 +69,7 @@ func (c *cacheClient) Complete(ctx context.Context, req llmgate.Request) (*llmga
 	return resp, nil
 }
 
+// CountTokens passes through to the inner client; counts are not cached.
 func (c *cacheClient) CountTokens(ctx context.Context, text string) (int, error) {
 	return c.inner.CountTokens(ctx, text)
 }

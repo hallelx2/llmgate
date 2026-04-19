@@ -7,10 +7,11 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/tmc/langchaingo/llms"
+
 	"github.com/hallelx2/llmgate"
 	"github.com/hallelx2/llmgate/capabilities"
 	"github.com/hallelx2/llmgate/pricing"
-	"github.com/tmc/langchaingo/llms"
 )
 
 // Adapter wraps a langchaingo llms.Model and presents it as an

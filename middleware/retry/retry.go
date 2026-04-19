@@ -59,6 +59,8 @@ type retryClient struct {
 	cfg   Config
 }
 
+// Complete invokes the inner client with exponential backoff, retrying only
+// errors that the configured predicate accepts and honouring ctx cancellation.
 func (r *retryClient) Complete(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 	var lastErr error
 	for attempt := 0; attempt <= r.cfg.MaxRetries; attempt++ {
@@ -85,6 +87,7 @@ func (r *retryClient) Complete(ctx context.Context, req llmgate.Request) (*llmga
 	return nil, lastErr
 }
 
+// CountTokens passes through to the inner client without retry.
 func (r *retryClient) CountTokens(ctx context.Context, text string) (int, error) {
 	// No retry on counting; it's advisory and callers fall back to estimates.
 	return r.inner.CountTokens(ctx, text)
