@@ -1,4 +1,4 @@
-package llmgate_test
+package cache_test
 
 import (
 	"context"
@@ -6,11 +6,12 @@ import (
 	"time"
 
 	"github.com/hallelx2/llmgate"
+	"github.com/hallelx2/llmgate/middleware/cache"
 )
 
-func TestCacheHit(t *testing.T) {
+func TestHit(t *testing.T) {
 	inner := &llmgate.Mock{Reply: "cached"}
-	client := llmgate.WithCache(llmgate.CacheConfig{Capacity: 16})(inner)
+	client := cache.New(cache.Config{Capacity: 16})(inner)
 
 	req := llmgate.Request{
 		Model:    "gpt-4o-mini",
@@ -43,9 +44,9 @@ func TestCacheHit(t *testing.T) {
 	}
 }
 
-func TestCacheMissOnDifferentMaxTokens(t *testing.T) {
+func TestMissOnDifferentMaxTokens(t *testing.T) {
 	inner := &llmgate.Mock{Reply: "ok"}
-	client := llmgate.WithCache(llmgate.CacheConfig{})(inner)
+	client := cache.New(cache.Config{})(inner)
 
 	base := llmgate.Request{
 		Model:    "m",
@@ -67,11 +68,11 @@ func TestCacheMissOnDifferentMaxTokens(t *testing.T) {
 	}
 }
 
-func TestCacheTTLExpiry(t *testing.T) {
+func TestTTLExpiry(t *testing.T) {
 	now := time.Date(2026, 4, 19, 12, 0, 0, 0, time.UTC)
 	clock := &now
 	inner := &llmgate.Mock{Reply: "ok"}
-	client := llmgate.WithCache(llmgate.CacheConfig{
+	client := cache.New(cache.Config{
 		TTL: 1 * time.Minute,
 		Now: func() time.Time { return *clock },
 	})(inner)
@@ -94,9 +95,9 @@ func TestCacheTTLExpiry(t *testing.T) {
 	}
 }
 
-func TestCacheCapacityEviction(t *testing.T) {
+func TestCapacityEviction(t *testing.T) {
 	inner := &llmgate.Mock{Reply: "ok"}
-	client := llmgate.WithCache(llmgate.CacheConfig{Capacity: 2})(inner)
+	client := cache.New(cache.Config{Capacity: 2})(inner)
 	mkReq := func(s string) llmgate.Request {
 		return llmgate.Request{Messages: []llmgate.Message{{Role: llmgate.RoleUser, Content: s}}}
 	}

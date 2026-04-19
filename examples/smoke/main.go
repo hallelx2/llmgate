@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"github.com/hallelx2/llmgate"
+	"github.com/hallelx2/llmgate/capabilities"
+	"github.com/hallelx2/llmgate/middleware/retry"
+	"github.com/hallelx2/llmgate/provider/gemini"
 )
 
 func main() {
@@ -18,14 +21,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	client, err := llmgate.NewGemini(llmgate.GeminiConfig{APIKey: key})
+	client, err := gemini.New(gemini.Config{APIKey: key})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "construct:", err)
 		os.Exit(1)
 	}
 
 	// Wrap in retry middleware to exercise it against the real network.
-	client = llmgate.WithRetries(llmgate.RetryConfig{MaxRetries: 2})(client)
+	client = retry.New(retry.Config{MaxRetries: 2})(client)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -50,7 +53,7 @@ func main() {
 		resp.Usage.InputTokens, resp.Usage.OutputTokens,
 		resp.Usage.TotalTokens, resp.Usage.CostUSD)
 
-	if c, ok := client.(llmgate.Capable); ok {
+	if c, ok := client.(capabilities.Capable); ok {
 		caps := c.Capabilities()
 		fmt.Printf("caps: ctx=%d json=%v stream=%v tools=%v vision=%v\n",
 			caps.MaxContext, caps.SupportsJSONMode,

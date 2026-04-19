@@ -1,4 +1,8 @@
-package llmgate
+// Package capabilities tracks what each known LLM model supports
+// (context window, JSON mode, streaming, tools, vision) and provides
+// a Capable interface middleware and routers can use to introspect
+// an underlying Client's model.
+package capabilities
 
 import "sync"
 
@@ -12,7 +16,7 @@ type Capabilities struct {
 }
 
 // Capable is optional — Clients that know their model's capabilities
-// implement it. Router and engines can type-assert.
+// implement it. Middleware, router, and engines can type-assert.
 type Capable interface {
 	Capabilities() Capabilities
 }
@@ -38,7 +42,7 @@ var defaultCapabilities = map[string]Capabilities{
 }
 
 var capMu sync.RWMutex
-var capabilities = func() map[string]Capabilities {
+var caps = func() map[string]Capabilities {
 	m := make(map[string]Capabilities, len(defaultCapabilities))
 	for k, v := range defaultCapabilities {
 		m[k] = v
@@ -46,23 +50,29 @@ var capabilities = func() map[string]Capabilities {
 	return m
 }()
 
-// LookupCapabilities returns known caps for a model, zero value if unknown.
-func LookupCapabilities(model string) Capabilities {
+// Lookup returns known caps for a model, zero value if unknown.
+func Lookup(model string) Capabilities {
 	capMu.RLock()
 	defer capMu.RUnlock()
-	return capabilities[model]
+	return caps[model]
 }
 
-// RegisterCapabilities overrides or adds capabilities for a model.
-func RegisterCapabilities(model string, c Capabilities) {
+// Register overrides or adds capabilities for a model.
+func Register(model string, c Capabilities) {
 	capMu.Lock()
 	defer capMu.Unlock()
-	capabilities[model] = c
+	caps[model] = c
 }
 
-// capsOf returns the Capabilities of c if it implements Capable, else zero.
-// Used by middleware to transparently expose the underlying model's caps.
-func capsOf(c Client) Capabilities {
+// Of returns the Capabilities of c if it implements Capable, else the
+// zero value. Middleware wrappers use this to delegate capability
+// lookups transparently to their inner Client.
+//
+// The parameter is declared as interface{} to avoid importing the root
+// llmgate package (which would create an import cycle, since root must
+// not depend on any subpackage). Any Client implementation that also
+// implements Capable will satisfy the type assertion at runtime.
+func Of(c interface{}) Capabilities {
 	if cap, ok := c.(Capable); ok {
 		return cap.Capabilities()
 	}

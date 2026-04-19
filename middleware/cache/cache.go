@@ -1,4 +1,6 @@
-package llmgate
+// Package cache provides an in-memory LRU response cache middleware
+// for llmgate.Client.
+package cache
 
 import (
 	"container/list"
@@ -9,10 +11,13 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"github.com/hallelx2/llmgate"
+	"github.com/hallelx2/llmgate/capabilities"
 )
 
-// CacheConfig configures WithCache.
-type CacheConfig struct {
+// Config configures New.
+type Config struct {
 	// Capacity is the maximum number of cached entries; <=0 defaults to 256.
 	Capacity int
 	// TTL is the per-entry expiry; 0 means no expiry.
@@ -21,11 +26,11 @@ type CacheConfig struct {
 	Now func() time.Time
 }
 
-// WithCache returns a Middleware that caches Response by request key.
+// New returns a Middleware that caches Response by request key.
 // Errors are never cached. CountTokens is not cached. Cached responses
 // have Usage.CostUSD zeroed out and FromCache set to true so callers
 // can see cache savings.
-func WithCache(cfg CacheConfig) Middleware {
+func New(cfg Config) llmgate.Middleware {
 	if cfg.Capacity <= 0 {
 		cfg.Capacity = 256
 	}
@@ -34,17 +39,17 @@ func WithCache(cfg CacheConfig) Middleware {
 		now = time.Now
 	}
 	c := &lruCache{cap: cfg.Capacity, ttl: cfg.TTL, now: now, ll: list.New(), m: map[string]*list.Element{}}
-	return func(inner Client) Client {
+	return func(inner llmgate.Client) llmgate.Client {
 		return &cacheClient{inner: inner, c: c}
 	}
 }
 
 type cacheClient struct {
-	inner Client
+	inner llmgate.Client
 	c     *lruCache
 }
 
-func (c *cacheClient) Complete(ctx context.Context, req Request) (*Response, error) {
+func (c *cacheClient) Complete(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 	key := cacheKey(req)
 	if resp, ok := c.c.get(key); ok {
 		clone := *resp
@@ -67,10 +72,10 @@ func (c *cacheClient) CountTokens(ctx context.Context, text string) (int, error)
 }
 
 // Capabilities delegates to the inner client.
-func (c *cacheClient) Capabilities() Capabilities { return capsOf(c.inner) }
+func (c *cacheClient) Capabilities() capabilities.Capabilities { return capabilities.Of(c.inner) }
 
 // cacheKey hashes the request fields that change the response.
-func cacheKey(req Request) string {
+func cacheKey(req llmgate.Request) string {
 	h := sha256.New()
 	h.Write([]byte(req.Model))
 	h.Write([]byte{0})
@@ -115,11 +120,11 @@ type lruCache struct {
 
 type lruEntry struct {
 	key     string
-	val     *Response
+	val     *llmgate.Response
 	expires time.Time // zero = never
 }
 
-func (c *lruCache) get(key string) (*Response, bool) {
+func (c *lruCache) get(key string) (*llmgate.Response, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.m[key]
@@ -136,7 +141,7 @@ func (c *lruCache) get(key string) (*Response, bool) {
 	return en.val, true
 }
 
-func (c *lruCache) put(key string, val *Response) {
+func (c *lruCache) put(key string, val *llmgate.Response) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if e, ok := c.m[key]; ok {

@@ -1,16 +1,18 @@
-package llmgate
+// Package retry provides a retry middleware with exponential backoff +
+// jitter for llmgate.Client.
+package retry
 
 import (
 	"context"
 	"math/rand"
 	"time"
+
+	"github.com/hallelx2/llmgate"
+	"github.com/hallelx2/llmgate/capabilities"
 )
 
-// Middleware wraps a Client. Compose them: WithRetries(WithCache(base, ...), ...).
-type Middleware func(Client) Client
-
-// RetryConfig tunes WithRetries.
-type RetryConfig struct {
+// Config tunes New.
+type Config struct {
 	// MaxRetries is the number of additional attempts after the first call.
 	// Zero falls back to 3.
 	MaxRetries int
@@ -32,9 +34,9 @@ type RetryConfig struct {
 	RetryIf func(err error) bool
 }
 
-// WithRetries returns a Middleware that retries Complete on transient
-// errors with exponential backoff + jitter.
-func WithRetries(cfg RetryConfig) Middleware {
+// New returns a Middleware that retries Complete on transient errors
+// with exponential backoff + jitter.
+func New(cfg Config) llmgate.Middleware {
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = 3
 	}
@@ -47,17 +49,17 @@ func WithRetries(cfg RetryConfig) Middleware {
 	if cfg.RetryIf == nil {
 		cfg.RetryIf = defaultRetryIf
 	}
-	return func(inner Client) Client {
+	return func(inner llmgate.Client) llmgate.Client {
 		return &retryClient{inner: inner, cfg: cfg}
 	}
 }
 
 type retryClient struct {
-	inner Client
-	cfg   RetryConfig
+	inner llmgate.Client
+	cfg   Config
 }
 
-func (r *retryClient) Complete(ctx context.Context, req Request) (*Response, error) {
+func (r *retryClient) Complete(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 	var lastErr error
 	for attempt := 0; attempt <= r.cfg.MaxRetries; attempt++ {
 		resp, err := r.inner.Complete(ctx, req)
@@ -90,7 +92,7 @@ func (r *retryClient) CountTokens(ctx context.Context, text string) (int, error)
 
 // Capabilities delegates to the inner client so Capable isn't lost through
 // middleware wrapping.
-func (r *retryClient) Capabilities() Capabilities { return capsOf(r.inner) }
+func (r *retryClient) Capabilities() capabilities.Capabilities { return capabilities.Of(r.inner) }
 
 // defaultRetryIf retries errors that Classify marks as Transient,
 // RateLimited, Timeout, or Unknown. Auth, BadRequest, ContextLength,
@@ -102,8 +104,8 @@ func defaultRetryIf(err error) bool {
 	if err == nil {
 		return false
 	}
-	switch Classify(err) {
-	case ErrClassAuth, ErrClassBadRequest, ErrClassContextLength, ErrClassContent, ErrClassCanceled:
+	switch llmgate.Classify(err) {
+	case llmgate.ErrClassAuth, llmgate.ErrClassBadRequest, llmgate.ErrClassContextLength, llmgate.ErrClassContent, llmgate.ErrClassCanceled:
 		return false
 	default:
 		return true

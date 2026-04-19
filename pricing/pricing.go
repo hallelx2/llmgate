@@ -1,4 +1,6 @@
-package llmgate
+// Package pricing maintains a static price table for known LLM models
+// and computes per-call USD cost from token counts.
+package pricing
 
 import "sync"
 
@@ -38,25 +40,25 @@ var prices = func() map[string]Price {
 	return m
 }()
 
-// LookupPrice returns the price for a model, or (Price{}, false) if unknown.
-func LookupPrice(model string) (Price, bool) {
+// Lookup returns the price for a model, or (Price{}, false) if unknown.
+func Lookup(model string) (Price, bool) {
 	priceMu.RLock()
 	defer priceMu.RUnlock()
 	p, ok := prices[model]
 	return p, ok
 }
 
-// RegisterPrice overrides or adds a price. Safe for init() in callers.
-func RegisterPrice(model string, p Price) {
+// Register overrides or adds a price. Safe for init() in callers.
+func Register(model string, p Price) {
 	priceMu.Lock()
 	defer priceMu.Unlock()
 	prices[model] = p
 }
 
-// ComputeCostUSD returns the USD cost for the given token counts at the
+// Compute returns the USD cost for the given token counts at the
 // model's rate, or 0 if the model isn't priced.
-func ComputeCostUSD(model string, in, out int) float64 {
-	p, ok := LookupPrice(model)
+func Compute(model string, in, out int) float64 {
+	p, ok := Lookup(model)
 	if !ok {
 		return 0
 	}

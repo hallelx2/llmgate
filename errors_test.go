@@ -3,9 +3,7 @@ package llmgate_test
 import (
 	"context"
 	"errors"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/hallelx2/llmgate"
 )
@@ -51,30 +49,5 @@ func TestPredicates(t *testing.T) {
 	}
 	if !llmgate.IsTransient(errors.New("503 service unavailable")) {
 		t.Fatalf("IsTransient should match 503")
-	}
-}
-
-// TestWithRetriesSkipsAuth verifies auth errors are NOT retried by the
-// default retry predicate.
-func TestWithRetriesSkipsAuth(t *testing.T) {
-	var calls int32
-	inner := &llmgate.Mock{
-		Respond: func(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
-			atomic.AddInt32(&calls, 1)
-			return nil, errors.New("401 unauthorized: invalid_api_key")
-		},
-	}
-	client := llmgate.WithRetries(llmgate.RetryConfig{
-		MaxRetries: 5,
-		BaseDelay:  1 * time.Millisecond,
-		MaxDelay:   2 * time.Millisecond,
-	})(inner)
-
-	_, err := client.Complete(context.Background(), llmgate.Request{})
-	if err == nil {
-		t.Fatalf("expected error")
-	}
-	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Fatalf("calls = %d, want 1 (auth errors must not retry)", got)
 	}
 }

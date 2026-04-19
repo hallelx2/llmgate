@@ -26,15 +26,15 @@
 
   <!-- Middleware stack -->
   <rect x="260" y="80" width="200" height="60" class="box mw"/>
-  <text x="360" y="105" text-anchor="middle" class="title">WithRetries</text>
+  <text x="360" y="105" text-anchor="middle" class="title">retry.New</text>
   <text x="360" y="124" text-anchor="middle" class="sub">backoff + jitter + classify</text>
 
   <rect x="260" y="160" width="200" height="60" class="box mw"/>
-  <text x="360" y="185" text-anchor="middle" class="title">WithBudget</text>
+  <text x="360" y="185" text-anchor="middle" class="title">budget.New</text>
   <text x="360" y="204" text-anchor="middle" class="sub">daily/total USD cap</text>
 
   <rect x="260" y="240" width="200" height="60" class="box mw"/>
-  <text x="360" y="265" text-anchor="middle" class="title">WithCache</text>
+  <text x="360" y="265" text-anchor="middle" class="title">cache.New</text>
   <text x="360" y="284" text-anchor="middle" class="sub">LRU + TTL, FromCache=true</text>
 
   <!-- Router -->

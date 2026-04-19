@@ -1,4 +1,4 @@
-package llmgate_test
+package router_test
 
 import (
 	"context"
@@ -6,9 +6,10 @@ import (
 	"testing"
 
 	"github.com/hallelx2/llmgate"
+	"github.com/hallelx2/llmgate/router"
 )
 
-func TestRouterFallsOverOnRateLimit(t *testing.T) {
+func TestFallsOverOnRateLimit(t *testing.T) {
 	primary := &llmgate.Mock{
 		Respond: func(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 			return nil, errors.New("rate limit exceeded")
@@ -16,11 +17,11 @@ func TestRouterFallsOverOnRateLimit(t *testing.T) {
 	}
 	secondary := &llmgate.Mock{Reply: "from secondary"}
 
-	r, err := llmgate.NewRouter(llmgate.RouterConfig{
+	r, err := router.New(router.Config{
 		Clients: []llmgate.Client{primary, secondary},
 	})
 	if err != nil {
-		t.Fatalf("NewRouter: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 	resp, err := r.Complete(context.Background(), llmgate.Request{
 		Messages: []llmgate.Message{{Role: llmgate.RoleUser, Content: "hi"}},
@@ -36,16 +37,16 @@ func TestRouterFallsOverOnRateLimit(t *testing.T) {
 	}
 }
 
-func TestRouterSurfacesLastError(t *testing.T) {
+func TestSurfacesLastError(t *testing.T) {
 	a := &llmgate.Mock{Respond: func(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 		return nil, errors.New("429 from a")
 	}}
 	b := &llmgate.Mock{Respond: func(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 		return nil, errors.New("503 from b")
 	}}
-	r, err := llmgate.NewRouter(llmgate.RouterConfig{Clients: []llmgate.Client{a, b}})
+	r, err := router.New(router.Config{Clients: []llmgate.Client{a, b}})
 	if err != nil {
-		t.Fatalf("NewRouter: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 	_, err = r.Complete(context.Background(), llmgate.Request{})
 	if err == nil {
@@ -56,14 +57,14 @@ func TestRouterSurfacesLastError(t *testing.T) {
 	}
 }
 
-func TestRouterDoesNotFallOverOnAuth(t *testing.T) {
+func TestDoesNotFallOverOnAuth(t *testing.T) {
 	a := &llmgate.Mock{Respond: func(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 		return nil, errors.New("401 unauthorized")
 	}}
 	b := &llmgate.Mock{Reply: "should not be reached"}
-	r, err := llmgate.NewRouter(llmgate.RouterConfig{Clients: []llmgate.Client{a, b}})
+	r, err := router.New(router.Config{Clients: []llmgate.Client{a, b}})
 	if err != nil {
-		t.Fatalf("NewRouter: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 	_, err = r.Complete(context.Background(), llmgate.Request{})
 	if err == nil {
@@ -74,23 +75,23 @@ func TestRouterDoesNotFallOverOnAuth(t *testing.T) {
 	}
 }
 
-func TestRouterRequiresClients(t *testing.T) {
-	if _, err := llmgate.NewRouter(llmgate.RouterConfig{}); err == nil {
+func TestRequiresClients(t *testing.T) {
+	if _, err := router.New(router.Config{}); err == nil {
 		t.Fatalf("expected error for empty Clients")
 	}
 }
 
-func TestRouterOnRateLimitOnlyPolicy(t *testing.T) {
+func TestOnRateLimitOnlyPolicy(t *testing.T) {
 	a := &llmgate.Mock{Respond: func(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 		return nil, errors.New("503 transient")
 	}}
 	b := &llmgate.Mock{Reply: "b"}
-	r, err := llmgate.NewRouter(llmgate.RouterConfig{
+	r, err := router.New(router.Config{
 		Clients:  []llmgate.Client{a, b},
-		Fallback: llmgate.OnRateLimit,
+		Fallback: router.OnRateLimit,
 	})
 	if err != nil {
-		t.Fatalf("NewRouter: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 	_, err = r.Complete(context.Background(), llmgate.Request{})
 	if err == nil {

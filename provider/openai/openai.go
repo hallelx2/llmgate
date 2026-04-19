@@ -1,13 +1,17 @@
-package llmgate
+// Package openai constructs an llmgate.Client backed by langchaingo's
+// OpenAI adapter.
+package openai
 
 import (
 	"fmt"
 
+	"github.com/hallelx2/llmgate"
+	"github.com/hallelx2/llmgate/internal/adapter"
 	lcopenai "github.com/tmc/langchaingo/llms/openai"
 )
 
-// OpenAIConfig configures the OpenAI client.
-type OpenAIConfig struct {
+// Config configures the OpenAI client.
+type Config struct {
 	APIKey         string
 	Model          string
 	ReasoningModel string
@@ -17,8 +21,8 @@ type OpenAIConfig struct {
 	BaseURL string
 }
 
-// NewOpenAI constructs a Client backed by langchaingo's OpenAI adapter.
-func NewOpenAI(cfg OpenAIConfig) (Client, error) {
+// New constructs an llmgate.Client backed by langchaingo's OpenAI adapter.
+func New(cfg Config) (llmgate.Client, error) {
 	opts := []lcopenai.Option{}
 	if cfg.APIKey != "" {
 		opts = append(opts, lcopenai.WithToken(cfg.APIKey))
@@ -36,10 +40,5 @@ func NewOpenAI(cfg OpenAIConfig) (Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("llmgate/openai: %w", err)
 	}
-	return &adapter{
-		m:        m,
-		provider: ProviderOpenAI,
-		model:    model,
-		modelSet: cfg.Model != "",
-	}, nil
+	return adapter.NewAdapter(m, llmgate.ProviderOpenAI, model, cfg.Model != ""), nil
 }

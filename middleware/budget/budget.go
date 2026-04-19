@@ -1,14 +1,19 @@
-package llmgate
+// Package budget provides a USD-cost budget middleware for llmgate.Client
+// that refuses calls once a daily or all-time cap is hit.
+package budget
 
 import (
 	"context"
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/hallelx2/llmgate"
+	"github.com/hallelx2/llmgate/capabilities"
 )
 
-// BudgetConfig configures WithBudget.
-type BudgetConfig struct {
+// Config configures New.
+type Config struct {
 	// DailyUSD is the per-UTC-day cap. <=0 means unlimited.
 	DailyUSD float64
 
@@ -19,32 +24,32 @@ type BudgetConfig struct {
 	Now func() time.Time
 }
 
-// ErrBudgetExceeded is returned by Complete when a cap is hit.
-var ErrBudgetExceeded = errors.New("llmgate: budget exceeded")
+// ErrExceeded is returned by Complete when a cap is hit.
+var ErrExceeded = errors.New("llmgate/budget: budget exceeded")
 
-// WithBudget returns a Middleware that refuses calls once a cap is hit.
+// New returns a Middleware that refuses calls once a cap is hit.
 // Costs are counted from Response.Usage.CostUSD after each successful call.
 // Calls with zero CostUSD (unpriced models) still consume but cost 0.
 //
 // The cap is enforced as a post-hoc counter: a single call may push the
-// counters past the cap, but the next call is refused with ErrBudgetExceeded.
+// counters past the cap, but the next call is refused with ErrExceeded.
 // The daily counter resets at UTC midnight.
-func WithBudget(cfg BudgetConfig) Middleware {
+func New(cfg Config) llmgate.Middleware {
 	now := cfg.Now
 	if now == nil {
 		now = time.Now
 	}
 	shared := &budgetClient{cfg: cfg, now: now, dayStart: utcDate(now())}
-	return func(inner Client) Client {
+	return func(inner llmgate.Client) llmgate.Client {
 		shared.inner = inner
 		return shared
 	}
 }
 
 type budgetClient struct {
-	cfg   BudgetConfig
+	cfg   Config
 	now   func() time.Time
-	inner Client
+	inner llmgate.Client
 
 	mu       sync.Mutex
 	daily    float64
@@ -52,7 +57,7 @@ type budgetClient struct {
 	dayStart time.Time
 }
 
-func (b *budgetClient) Complete(ctx context.Context, req Request) (*Response, error) {
+func (b *budgetClient) Complete(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 	if err := b.check(); err != nil {
 		return nil, err
 	}
@@ -69,17 +74,17 @@ func (b *budgetClient) CountTokens(ctx context.Context, text string) (int, error
 }
 
 // Capabilities delegates to the inner client.
-func (b *budgetClient) Capabilities() Capabilities { return capsOf(b.inner) }
+func (b *budgetClient) Capabilities() capabilities.Capabilities { return capabilities.Of(b.inner) }
 
 func (b *budgetClient) check() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.rolloverLocked()
 	if b.cfg.TotalUSD > 0 && b.total >= b.cfg.TotalUSD {
-		return ErrBudgetExceeded
+		return ErrExceeded
 	}
 	if b.cfg.DailyUSD > 0 && b.daily >= b.cfg.DailyUSD {
-		return ErrBudgetExceeded
+		return ErrExceeded
 	}
 	return nil
 }

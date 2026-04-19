@@ -25,17 +25,17 @@
   <text x="95" y="140" text-anchor="middle" class="sub">via Client iface</text>
 
   <rect x="200" y="80" width="150" height="70" class="box"/>
-  <text x="275" y="105" text-anchor="middle" class="title">WithCache</text>
+  <text x="275" y="105" text-anchor="middle" class="title">cache.New</text>
   <text x="275" y="124" text-anchor="middle" class="sub">hash(model,msgs,…)</text>
   <text x="275" y="140" text-anchor="middle" class="sub">hit → FromCache=true</text>
 
   <rect x="380" y="80" width="150" height="70" class="box"/>
-  <text x="455" y="105" text-anchor="middle" class="title">WithBudget</text>
+  <text x="455" y="105" text-anchor="middle" class="title">budget.New</text>
   <text x="455" y="124" text-anchor="middle" class="sub">pre-check USD cap</text>
-  <text x="455" y="140" text-anchor="middle" class="sub">or ErrBudgetExceeded</text>
+  <text x="455" y="140" text-anchor="middle" class="sub">or budget.ErrExceeded</text>
 
   <rect x="560" y="80" width="150" height="70" class="box"/>
-  <text x="635" y="105" text-anchor="middle" class="title">WithRetries</text>
+  <text x="635" y="105" text-anchor="middle" class="title">retry.New</text>
   <text x="635" y="124" text-anchor="middle" class="sub">Classify(err) decides</text>
   <text x="635" y="140" text-anchor="middle" class="sub">exp backoff + jitter</text>
 

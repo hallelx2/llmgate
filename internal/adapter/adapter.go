@@ -1,28 +1,46 @@
-package llmgate
+// Package adapter is the internal seam where llmgate's Client interface
+// meets langchaingo's provider implementations. Providers construct an
+// Adapter via NewAdapter; callers never see this package directly.
+package adapter
 
 import (
 	"context"
 	"fmt"
 
+	"github.com/hallelx2/llmgate"
+	"github.com/hallelx2/llmgate/capabilities"
+	"github.com/hallelx2/llmgate/pricing"
 	"github.com/tmc/langchaingo/llms"
 )
 
-// adapter wraps a langchaingo llms.Model and presents it as our Client.
-//
-// This is the seam where "llmgate's interface" meets "langchaingo's
-// provider implementations." Every Client produced by NewAnthropic /
-// NewOpenAI / NewGemini is an *adapter under the hood.
-type adapter struct {
-	m         llms.Model
-	provider  Provider
-	model     string
-	modelSet  bool // true if model came from config (pass it as a per-call option)
-	countTok  func(ctx context.Context, text string) (int, error)
+// Adapter wraps a langchaingo llms.Model and presents it as an
+// llmgate.Client. Every Client produced by the provider subpackages is
+// an *Adapter under the hood.
+type Adapter struct {
+	m        llms.Model
+	provider llmgate.Provider
+	model    string
+	modelSet bool // true if model came from config (pass it as a per-call option)
+	countTok func(ctx context.Context, text string) (int, error)
+}
+
+// NewAdapter constructs an *Adapter for a given langchaingo model.
+// provider identifies the vendor for error messages. model is the
+// default model name; modelSet is true when the model came from user
+// config (so it should be passed as a per-call option).
+func NewAdapter(m llms.Model, provider llmgate.Provider, model string, modelSet bool) *Adapter {
+	return &Adapter{m: m, provider: provider, model: model, modelSet: modelSet}
+}
+
+// SetCountTokens installs an optional token-counting function used by
+// CountTokens. Providers may install a tokenizer in their New().
+func (a *Adapter) SetCountTokens(f func(ctx context.Context, text string) (int, error)) {
+	a.countTok = f
 }
 
 // Complete translates a Request into llms.GenerateContent, runs it, and
-// maps the ContentResponse back into our Response.
-func (a *adapter) Complete(ctx context.Context, req Request) (*Response, error) {
+// maps the ContentResponse back into an llmgate.Response.
+func (a *Adapter) Complete(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 	msgs := toLangchainMessages(req.Messages, req.JSONMode, req.JSONSchema)
 
 	opts := []llms.CallOption{}
@@ -47,7 +65,7 @@ func (a *adapter) Complete(ctx context.Context, req Request) (*Response, error) 
 	}
 
 	choice := resp.Choices[0]
-	out := &Response{
+	out := &llmgate.Response{
 		Content:      choice.Content,
 		Model:        req.Model,
 		FinishReason: choice.StopReason,
@@ -62,25 +80,25 @@ func (a *adapter) Complete(ctx context.Context, req Request) (*Response, error) 
 	outTok := getInt(choice.GenerationInfo, "OutputTokens", "CompletionTokens", "output_tokens", "completion_tokens")
 	out.InputTokens = in
 	out.OutputTokens = outTok
-	out.Usage = Usage{
+	out.Usage = llmgate.Usage{
 		InputTokens:  in,
 		OutputTokens: outTok,
 		TotalTokens:  in + outTok,
-		CostUSD:      ComputeCostUSD(out.Model, in, outTok),
+		CostUSD:      pricing.Compute(out.Model, in, outTok),
 	}
 
 	return out, nil
 }
 
 // Capabilities reports known capabilities for the adapter's configured
-// model by looking them up in the registry. Satisfies Capable.
-func (a *adapter) Capabilities() Capabilities {
-	return LookupCapabilities(a.model)
+// model by looking them up in the registry. Satisfies capabilities.Capable.
+func (a *Adapter) Capabilities() capabilities.Capabilities {
+	return capabilities.Lookup(a.model)
 }
 
 // CountTokens falls back to the estimator installed by the provider factory,
 // or a ~4-chars-per-token guess.
-func (a *adapter) CountTokens(ctx context.Context, text string) (int, error) {
+func (a *Adapter) CountTokens(ctx context.Context, text string) (int, error) {
 	if a.countTok != nil {
 		return a.countTok(ctx, text)
 	}
@@ -91,7 +109,7 @@ func (a *adapter) CountTokens(ctx context.Context, text string) (int, error) {
 // When JSONMode is on, appends a firm "reply with JSON only" nudge to the
 // last human message — providers differ on strict JSON mode support, so the
 // prompt nudge is the one approach that works everywhere.
-func toLangchainMessages(msgs []Message, jsonMode bool, schema []byte) []llms.MessageContent {
+func toLangchainMessages(msgs []llmgate.Message, jsonMode bool, schema []byte) []llms.MessageContent {
 	out := make([]llms.MessageContent, 0, len(msgs))
 	for _, m := range msgs {
 		role := toLangchainRole(m.Role)
@@ -124,11 +142,11 @@ func toLangchainMessages(msgs []Message, jsonMode bool, schema []byte) []llms.Me
 	return out
 }
 
-func toLangchainRole(r Role) llms.ChatMessageType {
+func toLangchainRole(r llmgate.Role) llms.ChatMessageType {
 	switch r {
-	case RoleSystem:
+	case llmgate.RoleSystem:
 		return llms.ChatMessageTypeSystem
-	case RoleAssistant:
+	case llmgate.RoleAssistant:
 		return llms.ChatMessageTypeAI
 	default:
 		return llms.ChatMessageTypeHuman

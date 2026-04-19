@@ -16,23 +16,23 @@
 
   <!-- Stack -->
   <rect x="80" y="80" width="360" height="44" class="box layer1"/>
-  <text x="260" y="108" text-anchor="middle" class="title">WithRetries(RetryConfig{…})</text>
+  <text x="260" y="108" text-anchor="middle" class="title">retry.New(retry.Config{…})</text>
 
   <rect x="110" y="140" width="300" height="44" class="box layer2"/>
-  <text x="260" y="168" text-anchor="middle" class="title">WithBudget(BudgetConfig{DailyUSD: 50})</text>
+  <text x="260" y="168" text-anchor="middle" class="title">budget.New(budget.Config{DailyUSD: 50})</text>
 
   <rect x="140" y="200" width="240" height="44" class="box layer3"/>
-  <text x="260" y="228" text-anchor="middle" class="title">WithCache(CacheConfig{TTL: 1h})</text>
+  <text x="260" y="228" text-anchor="middle" class="title">cache.New(cache.Config{TTL: 1h})</text>
 
   <rect x="170" y="260" width="180" height="44" class="box base"/>
-  <text x="260" y="288" text-anchor="middle" class="title">NewAnthropic(cfg)</text>
+  <text x="260" y="288" text-anchor="middle" class="title">anthropic.New(cfg)</text>
 
   <!-- Snippet panel -->
   <rect x="480" y="80" width="320" height="224" class="box"/>
-  <text x="500" y="108" class="mono">client, _ := llmgate.NewAnthropic(cfg)</text>
-  <text x="500" y="132" class="mono">client = llmgate.WithCache(…)(client)</text>
-  <text x="500" y="156" class="mono">client = llmgate.WithBudget(…)(client)</text>
-  <text x="500" y="180" class="mono">client = llmgate.WithRetries(…)(client)</text>
+  <text x="500" y="108" class="mono">client, _ := anthropic.New(cfg)</text>
+  <text x="500" y="132" class="mono">client = cache.New(…)(client)</text>
+  <text x="500" y="156" class="mono">client = budget.New(…)(client)</text>
+  <text x="500" y="180" class="mono">client = retry.New(…)(client)</text>
   <text x="500" y="216" class="sub">// Call order (outer → inner):</text>
   <text x="500" y="232" class="mono">retries → budget → cache → anthropic</text>
   <text x="500" y="260" class="sub">Responses thread back out.</text>

@@ -1,23 +1,3 @@
-// Package llmgate is a provider-agnostic LLM gateway for Go, built on
-// top of github.com/tmc/langchaingo.
-//
-// langchaingo handles the per-provider wire protocols; llmgate wraps
-// them behind one small Client interface and adds the production
-// concerns langchaingo doesn't ship — retries, router/fallback, cost
-// tracking, capability flags, budget + cache middleware, and error
-// classification.
-//
-// Ships with:
-//   - Client interface (Complete + CountTokens).
-//   - Anthropic, OpenAI, and Gemini constructors backed by langchaingo.
-//   - Mock client for tests.
-//   - WithRetries, WithBudget, WithCache middleware.
-//   - Router with fallback policies.
-//   - Pricing + capability tables.
-//
-// Forthcoming:
-//   - Streaming + tool-use concrete provider implementations.
-//   - Native count_tokens via each provider's counting endpoint.
 package llmgate
 
 import (
@@ -29,8 +9,11 @@ import (
 type Role string
 
 const (
-	RoleSystem    Role = "system"
-	RoleUser      Role = "user"
+	// RoleSystem is the system / developer instructions role.
+	RoleSystem Role = "system"
+	// RoleUser is the end-user / human role.
+	RoleUser Role = "user"
+	// RoleAssistant is the model's own prior-turn role.
 	RoleAssistant Role = "assistant"
 )
 
@@ -77,8 +60,8 @@ type Response struct {
 	// Usage is the normalized accounting for this call.
 	Usage Usage
 
-	// FromCache is true when the response was served by WithCache without
-	// invoking the underlying provider.
+	// FromCache is true when the response was served by the cache middleware
+	// without invoking the underlying provider.
 	FromCache bool
 
 	// ToolCalls is the model's request to invoke tools. Scaffolding only —
@@ -97,13 +80,19 @@ type Client interface {
 	CountTokens(ctx context.Context, text string) (int, error)
 }
 
+// Middleware wraps a Client. Compose them: retry.New(...)(cache.New(...)(base)).
+type Middleware func(Client) Client
+
 // Provider identifies an LLM vendor.
 type Provider string
 
 const (
+	// ProviderAnthropic identifies Anthropic Claude.
 	ProviderAnthropic Provider = "anthropic"
-	ProviderOpenAI    Provider = "openai"
-	ProviderGemini    Provider = "gemini"
+	// ProviderOpenAI identifies OpenAI.
+	ProviderOpenAI Provider = "openai"
+	// ProviderGemini identifies Google Gemini.
+	ProviderGemini Provider = "gemini"
 )
 
 // ErrNotImplemented is returned by surfaces that aren't wired up yet

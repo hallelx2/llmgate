@@ -21,17 +21,17 @@ deliberately doesn't include.
 
 ![architecture](./docs/architecture.svg)
 
-The caller holds a `Client`. Middlewares (`WithRetries`, `WithBudget`,
-`WithCache`) wrap the client; a `Router` can sit anywhere in the chain
-to fall over between providers. The private `adapter` is the single
-seam where llmgate's interface meets langchaingo's provider
+The caller holds a `Client`. Middlewares (`retry.New`, `budget.New`,
+`cache.New`) wrap the client; a `router.New` can sit anywhere in the chain
+to fall over between providers. The private `internal/adapter` is the
+single seam where llmgate's interface meets langchaingo's provider
 implementations — one adapter serves all three providers.
 
 ![middleware stack](./docs/middleware-stack.svg)
 
 Order matters. The outermost wrapper sees the call first; the innermost
-hits the network. Put `WithCache` below `WithBudget` so cache hits
-don't burn budget. Put `WithRetries` on top so retries run regardless
+hits the network. Put `cache.New` below `budget.New` so cache hits
+don't burn budget. Put `retry.New` on top so retries run regardless
 of which inner layer tripped.
 
 ![request flow](./docs/request-flow.svg)
@@ -63,14 +63,14 @@ underneath. Roadmap tracked in
 **What's in now:**
 
 - `Client` interface with `Complete` + `CountTokens`
-- Anthropic, OpenAI, Gemini — all backed by `langchaingo/llms`
+- Anthropic, OpenAI, Gemini — all backed by `langchaingo/llms`, in the `provider/` subpackages
 - A single internal adapter; add a provider = add a ~30-line file
-- `WithRetries` middleware for exp-backoff on transient errors
-- Cost tracking via a static price table + `Usage.CostUSD` on every Response
-- Capability flags (`MaxContext`, `SupportsJSONMode`, `SupportsStreaming`, `SupportsTools`, `SupportsVision`) with a `Capable` interface
-- `NewRouter` with per-provider fallback (`OnRateLimit`, `OnTransient`, or a custom `FallbackPolicy`)
-- `WithBudget` middleware with daily + total USD caps and UTC rollover
-- `WithCache` middleware — in-memory LRU keyed on request shape, optional TTL
+- `retry.New` middleware for exp-backoff on transient errors
+- Cost tracking via a static `pricing` table + `Usage.CostUSD` on every Response
+- Capability flags (`MaxContext`, `SupportsJSONMode`, `SupportsStreaming`, `SupportsTools`, `SupportsVision`) with a `capabilities.Capable` interface
+- `router.New` with per-provider fallback (`router.OnRateLimit`, `router.OnTransient`, or a custom `router.FallbackPolicy`)
+- `budget.New` middleware with daily + total USD caps and UTC rollover
+- `cache.New` middleware — in-memory LRU keyed on request shape, optional TTL
 - Error classification (`Classify`, `IsRateLimited`, `IsTransient`, `IsAuth`) that the retry predicate and router policies use to decide what to retry or fall over on
 - `Mock` client with call recording for tests
 
@@ -96,10 +96,12 @@ import (
     "os"
 
     "github.com/hallelx2/llmgate"
+    "github.com/hallelx2/llmgate/middleware/retry"
+    "github.com/hallelx2/llmgate/provider/anthropic"
 )
 
 func main() {
-    client, err := llmgate.NewAnthropic(llmgate.AnthropicConfig{
+    client, err := anthropic.New(anthropic.Config{
         APIKey: os.Getenv("ANTHROPIC_API_KEY"),
         Model:  "claude-sonnet-4-5",
     })
@@ -108,7 +110,7 @@ func main() {
     }
 
     // Optional: wrap in exponential-backoff retry middleware.
-    client = llmgate.WithRetries(llmgate.RetryConfig{MaxRetries: 3})(client)
+    client = retry.New(retry.Config{MaxRetries: 3})(client)
 
     resp, err := client.Complete(context.Background(), llmgate.Request{
         Messages: []llmgate.Message{
