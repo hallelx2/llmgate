@@ -1,0 +1,18 @@
+# Go
+*.test
+*.out
+coverage.txt
+vendor/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local secrets (just in case someone creates one)
+.env
+.env.local
