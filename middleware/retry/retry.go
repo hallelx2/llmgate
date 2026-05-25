@@ -101,8 +101,12 @@ func (r *retryClient) Capabilities() capabilities.Capabilities { return capabili
 // RateLimited, Timeout, or Unknown. Auth, BadRequest, ContextLength,
 // Content, and Canceled errors are surfaced on the first failure.
 //
-// Unknown is retried on the "fail open" principle — if we can't classify
-// it, treat it as potentially transient and let MaxRetries bound the damage.
+// IMPORTANT — fail-open principle: Unknown errors are retried. This is
+// intentional. If we can't classify an error (e.g. new provider error
+// format), it's safer to retry it (bounded by MaxRetries) than to
+// immediately surface it and lose a potentially-successful request.
+// If this behavior is wrong for your use case, provide a custom
+// RetryIf function that returns false for ErrClassUnknown.
 func defaultRetryIf(err error) bool {
 	if err == nil {
 		return false

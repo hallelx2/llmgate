@@ -13,8 +13,14 @@ import (
 
 // Config configures the OpenAI client.
 type Config struct {
-	APIKey         string
-	Model          string
+	APIKey string
+	Model  string
+
+	// ReasoningModel is reserved for a future "deep reasoning" strategy
+	// (e.g. o3, o4-mini) that the engine can invoke for complex queries.
+	// Not wired into Complete today — use Request.Model to override
+	// per-call. Stored here so callers can configure it once and the
+	// engine can read it later without a config change.
 	ReasoningModel string
 
 	// BaseURL overrides the OpenAI API endpoint. Handy for Azure OpenAI,

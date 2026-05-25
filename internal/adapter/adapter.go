@@ -6,7 +6,11 @@ package adapter
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 
+	"github.com/pkoukk/tiktoken-go"
 	"github.com/tmc/langchaingo/llms"
 
 	"github.com/hallelx2/llmgate"
@@ -59,6 +63,14 @@ func (a *Adapter) Complete(ctx context.Context, req llmgate.Request) (*llmgate.R
 
 	resp, err := a.m.GenerateContent(ctx, msgs, opts...)
 	if err != nil {
+		// Try to create a structured LLMError with HTTP status code
+		// extracted from the error message.
+		if code := extractHTTPStatus(err); code > 0 {
+			return nil, llmgate.NewLLMError(
+				a.provider, code,
+				err.Error(), err,
+			)
+		}
 		return nil, fmt.Errorf("%s: %w", a.provider, err)
 	}
 	if len(resp.Choices) == 0 {
@@ -66,13 +78,14 @@ func (a *Adapter) Complete(ctx context.Context, req llmgate.Request) (*llmgate.R
 	}
 
 	choice := resp.Choices[0]
+	model := req.Model
+	if model == "" {
+		model = a.model
+	}
 	out := &llmgate.Response{
 		Content:      choice.Content,
-		Model:        req.Model,
+		Model:        model,
 		FinishReason: choice.StopReason,
-	}
-	if out.Model == "" {
-		out.Model = a.model
 	}
 
 	// Token usage is reported provider-by-provider under slightly different
@@ -85,7 +98,7 @@ func (a *Adapter) Complete(ctx context.Context, req llmgate.Request) (*llmgate.R
 		InputTokens:  in,
 		OutputTokens: outTok,
 		TotalTokens:  in + outTok,
-		CostUSD:      pricing.Compute(out.Model, in, outTok),
+		CostUSD:      pricing.Compute(model, in, outTok),
 	}
 
 	return out, nil
@@ -97,12 +110,30 @@ func (a *Adapter) Capabilities() capabilities.Capabilities {
 	return capabilities.Lookup(a.model)
 }
 
-// CountTokens falls back to the estimator installed by the provider factory,
-// or a ~4-chars-per-token guess.
+// CountTokens uses tiktoken-go for accurate token counting when
+// available, falling back to a per-provider tokenizer or the ~4 chars
+// per token heuristic.
 func (a *Adapter) CountTokens(ctx context.Context, text string) (int, error) {
+	// Priority 1: per-provider override (installed by factory).
 	if a.countTok != nil {
 		return a.countTok(ctx, text)
 	}
+
+	// Priority 2: tiktoken-go encoding lookup.
+	// tiktoken supports OpenAI models (cl100k_base, o200k_base) and
+	// falls back to cl100k_base for unknown models. This is
+	// significantly more accurate than len/4 for all providers.
+	enc, err := tiktoken.EncodingForModel(a.model)
+	if err != nil {
+		// Model not in tiktoken's registry — try common base encodings.
+		enc, err = tiktoken.GetEncoding("cl100k_base")
+	}
+	if err == nil {
+		tokens := enc.Encode(text, nil, nil)
+		return len(tokens), nil
+	}
+
+	// Priority 3: rough heuristic (~4 chars per token).
 	return len(text) / 4, nil
 }
 
@@ -178,6 +209,43 @@ func getInt(m map[string]any, keys ...string) int {
 			return int(x)
 		case float64:
 			return int(x)
+		}
+	}
+	return 0
+}
+
+// httpStatusRe matches "status code: NNN" or "status NNN" or just a
+// bare 3-digit HTTP code preceded by a word boundary.
+var httpStatusRe = regexp.MustCompile(`(?i)(?:status[ _]?(?:code)?:?\s*)(\d{3})`)
+
+// extractHTTPStatus tries to pull an HTTP status code from an error
+// message. Returns 0 if none found.
+func extractHTTPStatus(err error) int {
+	if err == nil {
+		return 0
+	}
+	msg := err.Error()
+	// Fast path: look for common patterns.
+	if m := httpStatusRe.FindStringSubmatch(msg); len(m) > 1 {
+		if code, e := strconv.Atoi(m[1]); e == nil && code >= 100 && code < 600 {
+			return code
+		}
+	}
+	// Check for bare status codes in known error format "API returned
+	// unexpected status code: NNN"
+	for _, prefix := range []string{
+		"unexpected status code: ",
+		"status code: ",
+	} {
+		idx := strings.Index(strings.ToLower(msg), prefix)
+		if idx < 0 {
+			continue
+		}
+		sub := msg[idx+len(prefix):]
+		if len(sub) >= 3 {
+			if code, e := strconv.Atoi(sub[:3]); e == nil && code >= 100 && code < 600 {
+				return code
+			}
 		}
 	}
 	return 0

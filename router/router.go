@@ -5,6 +5,7 @@ package router
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/hallelx2/llmgate"
 	"github.com/hallelx2/llmgate/capabilities"
@@ -55,9 +56,14 @@ type router struct {
 }
 
 // Complete tries each configured client in order, falling over according
-// to the router's policy until one succeeds or the policy declines to fall over.
+// to the router's policy until one succeeds or the policy declines to
+// fall over.
+//
+// When all clients fail, the returned error is a *RouteError that wraps
+// every error encountered along the way. The primary (first) error is
+// always available via RouteError.Primary for debugging.
 func (r *router) Complete(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
-	var lastErr error
+	var errs []error
 	for _, c := range r.clients {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -66,12 +72,12 @@ func (r *router) Complete(ctx context.Context, req llmgate.Request) (*llmgate.Re
 		if err == nil {
 			return resp, nil
 		}
-		lastErr = err
+		errs = append(errs, err)
 		if !r.fallback(err) {
 			return nil, err
 		}
 	}
-	return nil, lastErr
+	return nil, &RouteError{Errors: errs}
 }
 
 // CountTokens counts tokens using the first (primary) client. Fallbacks are
@@ -84,3 +90,46 @@ func (r *router) CountTokens(ctx context.Context, text string) (int, error) {
 // choice when the router is ordered by preference — callers see what the
 // primary can do, and fallbacks are expected to be at least as capable.
 func (r *router) Capabilities() capabilities.Capabilities { return capabilities.Of(r.clients[0]) }
+
+// RouteError is returned when all configured providers failed. It wraps
+// every error from each provider so callers can inspect the full failure
+// chain, not just the last attempt.
+type RouteError struct {
+	// Errors contains one error per attempted provider, in order.
+	Errors []error
+}
+
+// Primary returns the error from the first (preferred) provider. This is
+// usually the most actionable one for debugging — e.g. if the primary
+// returned 401 but the fallback returned 503, you want to see the 401.
+func (e *RouteError) Primary() error {
+	if len(e.Errors) == 0 {
+		return nil
+	}
+	return e.Errors[0]
+}
+
+// Last returns the error from the final provider attempted.
+func (e *RouteError) Last() error {
+	if len(e.Errors) == 0 {
+		return nil
+	}
+	return e.Errors[len(e.Errors)-1]
+}
+
+// Error returns a human-readable summary listing all provider failures.
+func (e *RouteError) Error() string {
+	if len(e.Errors) == 0 {
+		return "llmgate/router: all providers failed (no errors recorded)"
+	}
+	if len(e.Errors) == 1 {
+		return e.Errors[0].Error()
+	}
+	return fmt.Sprintf("llmgate/router: all %d providers failed: primary=%v, last=%v",
+		len(e.Errors), e.Errors[0], e.Errors[len(e.Errors)-1])
+}
+
+// Unwrap returns the primary error so errors.Is/As work against it.
+func (e *RouteError) Unwrap() error {
+	return e.Primary()
+}

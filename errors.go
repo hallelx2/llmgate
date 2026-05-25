@@ -3,6 +3,7 @@ package llmgate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -30,19 +31,127 @@ const (
 	ErrClassCanceled
 )
 
-// Classify inspects an error (including wrapped langchaingo / googleapi /
-// net errors) and returns its class. Classification is advisory, based on
-// string matching + errors.Is on context sentinels.
+// String returns a human-readable label.
+func (c ErrorClass) String() string {
+	switch c {
+	case ErrClassTransient:
+		return "transient"
+	case ErrClassRateLimited:
+		return "rate_limited"
+	case ErrClassAuth:
+		return "auth"
+	case ErrClassBadRequest:
+		return "bad_request"
+	case ErrClassContextLength:
+		return "context_length"
+	case ErrClassContent:
+		return "content"
+	case ErrClassTimeout:
+		return "timeout"
+	case ErrClassCanceled:
+		return "canceled"
+	default:
+		return "unknown"
+	}
+}
+
+// LLMError is a structured error returned by the adapter when enough
+// information is available to classify the failure without string
+// matching. Classify() checks for this type first, falling back to
+// string-based heuristics only when it's not present.
+//
+// Provider adapters are encouraged to wrap raw errors in LLMError when
+// the HTTP status code or provider-specific error code is known.
+type LLMError struct {
+	// Class is the pre-determined classification.
+	Class ErrorClass
+
+	// StatusCode is the HTTP status code from the provider, or 0 if
+	// not applicable (e.g. network errors).
+	StatusCode int
+
+	// Provider identifies which provider returned this error.
+	Provider Provider
+
+	// Message is a human-readable description.
+	Message string
+
+	// Cause is the underlying error.
+	Cause error
+}
+
+// Error implements the error interface.
+func (e *LLMError) Error() string {
+	if e.StatusCode > 0 {
+		return fmt.Sprintf("%s: %d: %s", e.Provider, e.StatusCode, e.Message)
+	}
+	return fmt.Sprintf("%s: %s", e.Provider, e.Message)
+}
+
+// Unwrap returns the underlying cause for errors.Is / errors.As.
+func (e *LLMError) Unwrap() error { return e.Cause }
+
+// NewLLMError creates a structured LLM error. Use this in provider
+// adapters when the HTTP status code is known.
+func NewLLMError(provider Provider, statusCode int, message string, cause error) *LLMError {
+	return &LLMError{
+		Class:      classifyStatusCode(statusCode),
+		StatusCode: statusCode,
+		Provider:   provider,
+		Message:    message,
+		Cause:      cause,
+	}
+}
+
+// classifyStatusCode maps an HTTP status to an ErrorClass.
+func classifyStatusCode(code int) ErrorClass {
+	switch {
+	case code == 429:
+		return ErrClassRateLimited
+	case code == 401 || code == 403:
+		return ErrClassAuth
+	case code == 400:
+		return ErrClassBadRequest
+	case code == 413:
+		return ErrClassContextLength
+	case code >= 500:
+		return ErrClassTransient
+	case code == 408:
+		return ErrClassTimeout
+	default:
+		return ErrClassUnknown
+	}
+}
+
+// Classify inspects an error and returns its class. Classification
+// follows this priority:
+//
+//  1. If err is or wraps an *LLMError, use its pre-classified Class.
+//  2. Check for context sentinels (Canceled, DeadlineExceeded).
+//  3. Fall back to string-based heuristics on err.Error().
+//
+// The string fallback is advisory — error messages from providers can
+// change between releases. Prefer *LLMError for reliable classification.
 func Classify(err error) ErrorClass {
 	if err == nil {
 		return ErrClassUnknown
 	}
+
+	// Priority 1: structured LLMError.
+	var llmErr *LLMError
+	if errors.As(err, &llmErr) {
+		return llmErr.Class
+	}
+
+	// Priority 2: context sentinels.
 	if errors.Is(err, context.Canceled) {
 		return ErrClassCanceled
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return ErrClassTimeout
 	}
+
+	// Priority 3: string-based heuristics (legacy fallback).
 	s := strings.ToLower(err.Error())
 
 	// Rate limit — check before generic 4xx matchers.
