@@ -46,3 +46,50 @@ func TestComputeUnknown(t *testing.T) {
 		t.Fatalf("expected 0 for unknown model, got %v", got)
 	}
 }
+
+func TestComputeWithOK(t *testing.T) {
+	cost, ok := pricing.ComputeWithOK("gpt-4o-mini", 1000, 500)
+	if !ok {
+		t.Fatalf("expected gpt-4o-mini to be priced")
+	}
+	if math.Abs(cost-0.00045) > 1e-9 {
+		t.Fatalf("ComputeWithOK cost = %v, want 0.00045", cost)
+	}
+
+	// Unknown model: cost 0 AND priced=false, so callers can tell an
+	// unpriced call apart from a genuinely free one.
+	cost, ok = pricing.ComputeWithOK("nonexistent-model-zzz-2", 1000, 1000)
+	if ok {
+		t.Fatalf("expected unknown model to report priced=false")
+	}
+	if cost != 0 {
+		t.Fatalf("expected 0 cost for unknown model, got %v", cost)
+	}
+}
+
+func TestGLMPriced(t *testing.T) {
+	p, ok := pricing.Lookup("glm-4.6")
+	if !ok {
+		t.Fatalf("glm-4.6 must be in the price book (this was the benchmark $0 regression)")
+	}
+	if p.InputPerMTok <= 0 || p.OutputPerMTok <= 0 {
+		t.Fatalf("glm-4.6 prices must be positive, got %+v", p)
+	}
+}
+
+func TestWarnFuncFiresOncePerModel(t *testing.T) {
+	var calls []string
+	pricing.WarnFunc = func(model string) { calls = append(calls, model) }
+	t.Cleanup(func() { pricing.WarnFunc = nil })
+
+	const model = "unpriced-warn-test-model"
+	for i := 0; i < 3; i++ {
+		pricing.ComputeWithOK(model, 10, 10)
+	}
+	// A known model must never warn.
+	pricing.ComputeWithOK("gpt-4o-mini", 10, 10)
+
+	if len(calls) != 1 || calls[0] != model {
+		t.Fatalf("WarnFunc should fire exactly once for the unpriced model, got %v", calls)
+	}
+}

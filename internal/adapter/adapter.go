@@ -5,6 +5,7 @@ package adapter
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -60,6 +61,12 @@ func (a *Adapter) Complete(ctx context.Context, req llmgate.Request) (*llmgate.R
 	if req.Temperature != 0 {
 		opts = append(opts, llms.WithTemperature(req.Temperature))
 	}
+	if len(req.Tools) > 0 {
+		opts = append(opts, llms.WithTools(toLangchainTools(req.Tools)))
+		if tc := toLangchainToolChoice(req.ToolChoice); tc != nil {
+			opts = append(opts, llms.WithToolChoice(tc))
+		}
+	}
 
 	resp, err := a.m.GenerateContent(ctx, msgs, opts...)
 	if err != nil {
@@ -86,6 +93,7 @@ func (a *Adapter) Complete(ctx context.Context, req llmgate.Request) (*llmgate.R
 		Content:      choice.Content,
 		Model:        model,
 		FinishReason: choice.StopReason,
+		ToolCalls:    fromLangchainToolCalls(choice),
 	}
 
 	// Token usage is reported provider-by-provider under slightly different
@@ -94,14 +102,86 @@ func (a *Adapter) Complete(ctx context.Context, req llmgate.Request) (*llmgate.R
 	outTok := getInt(choice.GenerationInfo, "OutputTokens", "CompletionTokens", "output_tokens", "completion_tokens")
 	out.InputTokens = in
 	out.OutputTokens = outTok
+	cost, priced := pricing.ComputeWithOK(model, in, outTok)
 	out.Usage = llmgate.Usage{
 		InputTokens:  in,
 		OutputTokens: outTok,
 		TotalTokens:  in + outTok,
-		CostUSD:      pricing.Compute(model, in, outTok),
+		CostUSD:      cost,
+		Priced:       priced,
 	}
 
 	return out, nil
+}
+
+// toLangchainTools converts our provider-agnostic tool declarations into
+// langchaingo's []llms.Tool. The InputSchema bytes are unmarshalled into
+// the generic structure langchaingo forwards as the function parameters;
+// a malformed or empty schema yields a tool with no declared parameters.
+func toLangchainTools(defs []llmgate.ToolDef) []llms.Tool {
+	out := make([]llms.Tool, 0, len(defs))
+	for _, d := range defs {
+		fn := &llms.FunctionDefinition{
+			Name:        d.Name,
+			Description: d.Description,
+		}
+		if len(d.InputSchema) > 0 {
+			var params any
+			if err := json.Unmarshal(d.InputSchema, &params); err == nil {
+				fn.Parameters = params
+			}
+		}
+		out = append(out, llms.Tool{Type: "function", Function: fn})
+	}
+	return out
+}
+
+// toLangchainToolChoice maps the provider-agnostic ToolChoice string onto
+// langchaingo's WithToolChoice argument. Returns nil to leave the choice
+// unset (provider default ~ "auto").
+func toLangchainToolChoice(choice string) any {
+	switch c := strings.ToLower(strings.TrimSpace(choice)); c {
+	case "":
+		return nil
+	case "auto", "none", "required":
+		return c // strings every provider understands
+	case "any":
+		return "required" // normalise Anthropic's spelling to the common one
+	default:
+		// Treat anything else as a request to force a specific named tool.
+		return llms.ToolChoice{
+			Type:     "function",
+			Function: &llms.FunctionReference{Name: choice},
+		}
+	}
+}
+
+// fromLangchainToolCalls maps a response choice's tool calls into our
+// ToolCall slice. It prefers the plural ToolCalls field and falls back to
+// the singular FuncCall that some providers populate instead.
+func fromLangchainToolCalls(choice *llms.ContentChoice) []llmgate.ToolCall {
+	if choice == nil {
+		return nil
+	}
+	raw := choice.ToolCalls
+	if len(raw) == 0 && choice.FuncCall != nil {
+		raw = []llms.ToolCall{{Type: "function", FunctionCall: choice.FuncCall}}
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]llmgate.ToolCall, 0, len(raw))
+	for _, tc := range raw {
+		call := llmgate.ToolCall{ID: tc.ID}
+		if tc.FunctionCall != nil {
+			call.Name = tc.FunctionCall.Name
+			if tc.FunctionCall.Arguments != "" {
+				call.Input = []byte(tc.FunctionCall.Arguments)
+			}
+		}
+		out = append(out, call)
+	}
+	return out
 }
 
 // Capabilities reports known capabilities for the adapter's configured
@@ -145,10 +225,36 @@ func toLangchainMessages(msgs []llmgate.Message, jsonMode bool, schema []byte) [
 	out := make([]llms.MessageContent, 0, len(msgs))
 	for _, m := range msgs {
 		role := toLangchainRole(m.Role)
-		out = append(out, llms.MessageContent{
-			Role:  role,
-			Parts: []llms.ContentPart{llms.TextContent{Text: m.Content}},
-		})
+		var parts []llms.ContentPart
+
+		switch m.Role {
+		case llmgate.RoleTool:
+			// Tool-result turn: carry the output keyed by the call ID so the
+			// provider can match it to the assistant's request.
+			parts = append(parts, llms.ToolCallResponse{
+				ToolCallID: m.ToolCallID,
+				Content:    m.Content,
+			})
+		default:
+			// Keep the text part for plain turns and for assistant turns that
+			// pair a message with tool calls. Skip the empty placeholder only
+			// when the turn is purely tool calls.
+			if m.Content != "" || len(m.ToolCalls) == 0 {
+				parts = append(parts, llms.TextContent{Text: m.Content})
+			}
+			for _, tc := range m.ToolCalls {
+				parts = append(parts, llms.ToolCall{
+					ID:   tc.ID,
+					Type: "function",
+					FunctionCall: &llms.FunctionCall{
+						Name:      tc.Name,
+						Arguments: string(tc.Input),
+					},
+				})
+			}
+		}
+
+		out = append(out, llms.MessageContent{Role: role, Parts: parts})
 	}
 
 	if !jsonMode {
@@ -180,6 +286,8 @@ func toLangchainRole(r llmgate.Role) llms.ChatMessageType {
 		return llms.ChatMessageTypeSystem
 	case llmgate.RoleAssistant:
 		return llms.ChatMessageTypeAI
+	case llmgate.RoleTool:
+		return llms.ChatMessageTypeTool
 	default:
 		return llms.ChatMessageTypeHuman
 	}

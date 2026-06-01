@@ -39,6 +39,11 @@ var defaultCapabilities = map[string]Capabilities{
 	"gemini-2.5-pro":   {MaxContext: 2000000, SupportsJSONMode: true, SupportsStreaming: true, SupportsTools: true, SupportsVision: true},
 	"gemini-2.5-flash": {MaxContext: 1000000, SupportsJSONMode: true, SupportsStreaming: true, SupportsTools: true, SupportsVision: true},
 	"gemini-2.0-flash": {MaxContext: 1000000, SupportsJSONMode: true, SupportsStreaming: true, SupportsTools: true, SupportsVision: true},
+
+	// Zhipu / Z.ai GLM
+	"glm-4.6":     {MaxContext: 200000, SupportsJSONMode: true, SupportsStreaming: true, SupportsTools: true, SupportsVision: false},
+	"glm-4.5":     {MaxContext: 128000, SupportsJSONMode: true, SupportsStreaming: true, SupportsTools: true, SupportsVision: false},
+	"glm-4.5-air": {MaxContext: 128000, SupportsJSONMode: true, SupportsStreaming: true, SupportsTools: true, SupportsVision: false},
 }
 
 var capMu sync.RWMutex

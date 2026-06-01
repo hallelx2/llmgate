@@ -34,6 +34,11 @@ var defaultPrices = map[string]Price{
 	"gemini-2.5-flash":    {InputPerMTok: 0.15, OutputPerMTok: 0.60},
 	"gemini-2.5-pro":      {InputPerMTok: 1.25, OutputPerMTok: 10.00},
 	"gemini-2.0-flash":    {InputPerMTok: 0.10, OutputPerMTok: 0.40},
+
+	// ── Zhipu / Z.ai GLM (public Z.ai API list prices, added May 2026) ─
+	"glm-4.6":     {InputPerMTok: 0.60, OutputPerMTok: 2.20},
+	"glm-4.5":     {InputPerMTok: 0.60, OutputPerMTok: 2.20},
+	"glm-4.5-air": {InputPerMTok: 0.20, OutputPerMTok: 1.10},
 }
 
 var priceMu sync.RWMutex
@@ -60,14 +65,42 @@ func Register(model string, p Price) {
 	prices[model] = p
 }
 
-// Compute returns the USD cost for the given token counts at the
-// model's rate, or 0 if the model isn't priced.
-func Compute(model string, in, out int) float64 {
+// WarnFunc, if non-nil, is invoked once per distinct model that has no
+// price-book entry, the first time a cost is computed for it. Wire it to a
+// logger to surface "$0 because the model is unpriced" — otherwise an
+// unpriced model is silently accounted as free, which is the failure mode
+// that makes a quality-per-dollar benchmark read ∞. Safe to leave nil; the
+// pricing package itself takes no logging dependency.
+var WarnFunc func(model string)
+
+var unpricedSeen sync.Map // model string -> struct{}; bounds WarnFunc to once per model
+
+// ComputeWithOK returns the USD cost for the given token counts at the
+// model's rate and whether the model was actually priced. When the model
+// is unknown it returns (0, false) and fires WarnFunc once for that model.
+//
+// Prefer this over Compute when you report spend: a (0, false) result means
+// "cost unknown", which is not the same as a genuinely free (0, true) call.
+func ComputeWithOK(model string, in, out int) (float64, bool) {
 	p, ok := Lookup(model)
 	if !ok {
-		return 0
+		if WarnFunc != nil {
+			if _, loaded := unpricedSeen.LoadOrStore(model, struct{}{}); !loaded {
+				WarnFunc(model)
+			}
+		}
+		return 0, false
 	}
-	return (float64(in)*p.InputPerMTok + float64(out)*p.OutputPerMTok) / 1_000_000.0
+	return (float64(in)*p.InputPerMTok + float64(out)*p.OutputPerMTok) / 1_000_000.0, true
+}
+
+// Compute returns the USD cost for the given token counts at the model's
+// rate, or 0 if the model isn't priced. It is a thin wrapper over
+// ComputeWithOK that discards the priced flag; new callers that report
+// spend should use ComputeWithOK so unpriced and free are distinguishable.
+func Compute(model string, in, out int) float64 {
+	cost, _ := ComputeWithOK(model, in, out)
+	return cost
 }
 
 // KnownModels returns a sorted list of all models with pricing data.
