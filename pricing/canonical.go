@@ -13,6 +13,11 @@ const (
 	familyAnthropic
 	familyOpenAI
 	familyGoogle
+	// familyZhipu covers the GLM models. It exists to identify Zhipu's
+	// own API among the many resellers that carry GLM (see provider.go);
+	// it deliberately has no entry in familyCacheMultipliers, so GLM keeps
+	// falling through to the conservative unknown-family default.
+	familyZhipu
 )
 
 // vendorPrefixes are the leading segments gateways and SDKs bolt onto a
@@ -78,8 +83,16 @@ func Canonical(model string) string {
 	}
 
 	s = strings.TrimSuffix(s, "-latest")
-	s = dateSuffix.ReplaceAllString(s, "")
+
+	// Version before date, and it matters. Bedrock stacks both —
+	// "claude-sonnet-4-5-20250929-v1:0" — and stripping the date first
+	// finds no match, because "-v1" is in the way. That left the dated
+	// Bedrock IDs on a different canonical key from the plain dated ID,
+	// so a lookup for "claude-sonnet-4-5-20250929" landed in a bucket
+	// holding only regional and GovCloud rates and quietly billed the
+	// 10-20% premium.
 	s = versionSuffix.ReplaceAllString(s, "")
+	s = dateSuffix.ReplaceAllString(s, "")
 
 	return s
 }
@@ -119,6 +132,8 @@ func familyOf(model string) family {
 		return familyOpenAI
 	case strings.HasPrefix(s, "gemini"):
 		return familyGoogle
+	case strings.HasPrefix(s, "glm"), strings.HasPrefix(s, "autoglm"):
+		return familyZhipu
 	default:
 		return familyUnknown
 	}

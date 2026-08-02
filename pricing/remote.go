@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -108,12 +110,20 @@ func UseRemote(ctx context.Context, cfg RemoteConfig) (stop func(), err error) {
 				}
 				continue
 			}
-			cleaned, e := vet(raw)
+			cleaned, dropped, e := vet(raw)
 			if e != nil {
 				if cfg.OnError != nil {
 					cfg.OnError(src.Name(), e)
 				}
 				continue
+			}
+			// Dropped rows are not fatal, but they are evidence that a
+			// feed has gone wrong somewhere. Report them rather than
+			// letting the snapshot look clean.
+			if len(dropped) > 0 && cfg.OnError != nil {
+				cfg.OnError(src.Name(), fmt.Errorf(
+					"dropped %d entries with implausible rates: %s",
+					len(dropped), strings.Join(sortedSample(dropped, 5), ", ")))
 			}
 
 			snap := &snapshot{prices: cleaned, asOf: time.Now(), source: src.Name()}
@@ -190,49 +200,99 @@ const maxDrift = 10.0
 // Anything non-positive is dropped rather than trusted: a zero rate would
 // quietly report paid calls as free, which is the exact failure this
 // package exists to prevent.
-func vet(raw map[string]Price) (map[string]Price, error) {
+func vet(raw map[string]Price) (map[string]Price, []string, error) {
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("source returned no models")
+		return nil, nil, fmt.Errorf("source returned no models")
 	}
 
-	out := make(map[string]Price, len(raw))
+	// Drop implausible entries before the collapse, not after. Doing it
+	// afterwards let one poisoned row decide a canonical key and then
+	// condemn the whole snapshot: LiteLLM carries
+	// "wandb/zai-org/GLM-4.5" at 55000/200000, which canonicalizes onto
+	// glm-4.5 and reads as a 91000x move against the embedded rate. One
+	// bad row upstream must cost us that row, not the refresh.
+	var dropped []string
+	usable := make(map[string]Price, len(raw))
 	for id, p := range raw {
 		if p.InputPerMTok <= 0 || p.OutputPerMTok <= 0 {
 			continue
 		}
-		key := Canonical(id)
-		if key == "" {
+		if Canonical(id) == "" {
 			continue
 		}
-		// Prefer whichever entry carries cache rates when a vendor
-		// prefix collapses two IDs onto the same canonical key.
-		if prev, ok := out[key]; ok && prev.CacheReadPerMTok > 0 && p.CacheReadPerMTok == 0 {
+		if known, ok := defaultPrices[Canonical(id)]; ok {
+			if drift(known.InputPerMTok, p.InputPerMTok) > maxDrift ||
+				drift(known.OutputPerMTok, p.OutputPerMTok) > maxDrift {
+				dropped = append(dropped, id)
+				continue
+			}
+		}
+		usable[id] = p
+	}
+
+	if len(usable) == 0 {
+		return nil, dropped, fmt.Errorf("source returned %d models, none usable", len(raw))
+	}
+
+	// A handful of bad rows is upstream noise. A large fraction of them is
+	// a units error or a schema change, and adopting it would misreport
+	// spend by orders of magnitude — so that still condemns the snapshot.
+	if len(dropped) > len(raw)/10 {
+		return nil, dropped, fmt.Errorf(
+			"%d of %d entries have implausible rates — treating snapshot as corrupt",
+			len(dropped), len(raw))
+	}
+
+	// Collapse to canonical keys. Many upstream IDs land on the same key
+	// with genuinely different prices, one per vendor selling the model,
+	// so the winner is chosen by rank (see provider.go) rather than by
+	// whichever the map happened to yield last.
+	out := make(map[string]Price, len(usable))
+	winner := make(map[string]string, len(usable))
+	for id, p := range usable {
+		key := Canonical(id)
+		if prevID, ok := winner[key]; ok && !better(id, p, prevID, out[key]) {
 			continue
+		}
+		out[key] = p
+		winner[key] = id
+	}
+
+	// A feed that omits a cache rate is silent about it, not asserting
+	// zero. Where the embedded table has a published rate for the same
+	// model, keep it: "zai/glm-4.6" wins its collision on rank but carries
+	// no cache-write rate, and without this the read rate would fall
+	// through to the family multiplier — 0.30 against the 0.11 z.ai
+	// actually charges, a 2.7x error on every cached token.
+	for key, p := range out {
+		known, ok := defaultPrices[key]
+		if !ok {
+			continue
+		}
+		if p.CacheReadPerMTok == 0 && known.CacheReadPerMTok > 0 {
+			p.CacheReadPerMTok = known.CacheReadPerMTok
+		}
+		if p.CacheWritePerMTok == 0 && known.CacheWritePerMTok > 0 {
+			p.CacheWritePerMTok = known.CacheWritePerMTok
+		}
+		if p.ReasoningPerMTok == 0 && known.ReasoningPerMTok > 0 {
+			p.ReasoningPerMTok = known.ReasoningPerMTok
 		}
 		out[key] = p
 	}
 
-	if len(out) == 0 {
-		return nil, fmt.Errorf("source returned %d models, none usable", len(raw))
-	}
+	return out, dropped, nil
+}
 
-	// Cross-check against the models we ship rates for. If a well-known
-	// rate has moved by more than an order of magnitude the feed is
-	// wrong, not the vendor.
-	for id, known := range defaultPrices {
-		got, ok := out[id]
-		if !ok {
-			continue
-		}
-		if drift(known.InputPerMTok, got.InputPerMTok) > maxDrift ||
-			drift(known.OutputPerMTok, got.OutputPerMTok) > maxDrift {
-			return nil, fmt.Errorf(
-				"implausible rate for %s: embedded %.4f/%.4f vs remote %.4f/%.4f — treating snapshot as corrupt",
-				id, known.InputPerMTok, known.OutputPerMTok, got.InputPerMTok, got.OutputPerMTok)
-		}
+// sortedSample returns up to n of the given IDs in sorted order, so an
+// error message naming "some of" a list names the same ones every time.
+func sortedSample(ids []string, n int) []string {
+	s := slices.Clone(ids)
+	slices.Sort(s)
+	if len(s) > n {
+		s = append(s[:n:n], fmt.Sprintf("and %d more", len(s)-n))
 	}
-
-	return out, nil
+	return s
 }
 
 // drift returns the ratio between two rates, always >= 1.
