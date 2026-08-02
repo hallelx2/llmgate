@@ -57,8 +57,7 @@ cost per call, capability flags — baked in rather than bolted on.
 ## Status
 
 Early code. Interface is the stable surface; implementations evolve
-underneath. Roadmap tracked in
-[vectorless-engine/docs/roadmaps/LLMGATE.md](https://github.com/hallelx2/vectorless-engine/blob/main/docs/roadmaps/LLMGATE.md).
+underneath. Roadmap lives in [ROADMAP.md](./ROADMAP.md).
 
 **What's in now:**
 
@@ -74,10 +73,14 @@ underneath. Roadmap tracked in
 - Error classification (`Classify`, `IsRateLimited`, `IsTransient`, `IsAuth`) that the retry predicate and router policies use to decide what to retry or fall over on
 - `Mock` client with call recording for tests
 
+- Native tool calling (`Request.Tools`, `Response.ToolCalls`) across all three providers
+
 **Coming next:**
 
-- Concrete streaming + tool-use implementations across providers (interfaces and types are already declared)
+- Streaming (`Streamer` is declared; no provider implements it yet)
 - Native `count_tokens` via each provider's counting endpoint
+- Anthropic prompt caching and OpenAI strict structured outputs, both of
+  which need a native client rather than the langchaingo path
 
 ## Install
 
@@ -216,8 +219,7 @@ vintage of whatever is loaded.
 - **Pure IO-bound code.** Parallelism is always network-bound.
   `errgroup` + `semaphore`, no worker pools.
 
-See [DESIGN.md](./DESIGN.md) for the longer-form write-up and
-[ROADMAP.md](./ROADMAP.md) for phases.
+See [ROADMAP.md](./ROADMAP.md) for what is shipped and what is next.
 
 ## License
 

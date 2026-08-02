@@ -80,7 +80,7 @@ func (r *retryClient) Complete(ctx context.Context, req llmgate.Request) (*llmga
 		if attempt == r.cfg.MaxRetries {
 			break
 		}
-		if !sleepBackoff(ctx, attempt, r.cfg.BaseDelay, r.cfg.MaxDelay) {
+		if !sleepBackoff(ctx, err, attempt, r.cfg.BaseDelay, r.cfg.MaxDelay) {
 			return nil, ctx.Err()
 		}
 	}
@@ -112,21 +112,62 @@ func defaultRetryIf(err error) bool {
 		return false
 	}
 	switch llmgate.Classify(err) {
-	case llmgate.ErrClassAuth, llmgate.ErrClassBadRequest, llmgate.ErrClassContextLength, llmgate.ErrClassContent, llmgate.ErrClassCanceled:
+	case llmgate.ErrClassAuth, llmgate.ErrClassBadRequest, llmgate.ErrClassContextLength,
+		llmgate.ErrClassContent, llmgate.ErrClassCanceled, llmgate.ErrClassGateway:
 		return false
 	default:
 		return true
 	}
 }
 
-func sleepBackoff(ctx context.Context, attempt int, base, max time.Duration) bool {
-	d := base << attempt
+// backoffFor computes the delay before the next attempt.
+//
+// A provider that sent Retry-After has told us exactly how long to wait,
+// which beats any guess — but it is still clamped, so a hostile or
+// mistaken header cannot park the caller for an hour.
+func backoffFor(err error, attempt int, base, max time.Duration) time.Duration {
+	if after, ok := llmgate.RetryAfter(err); ok && after > 0 {
+		return min(after, max)
+	}
+	return expBackoff(attempt, base, max)
+}
+
+// expBackoff doubles base per attempt, saturating at max.
+//
+// The shift is guarded rather than computed directly: base<<attempt
+// overflows int64 around attempt 35 for a sub-second base and goes
+// negative, which slips past a `> max` clamp and then panics in
+// rand.Int63n on a non-positive bound.
+func expBackoff(attempt int, base, max time.Duration) time.Duration {
+	d := base
+	for range attempt {
+		if d >= max/2 {
+			return max
+		}
+		d *= 2
+	}
 	if d > max {
 		d = max
 	}
-	jitter := time.Duration(rand.Int63n(int64(d / 2)))
+	return d
+}
+
+// jitterFor returns a random 0..d/2 stagger, so a fleet retrying together
+// does not re-collide on the same tick.
+func jitterFor(d time.Duration) time.Duration {
+	half := int64(d / 2)
+	if half <= 0 {
+		// rand.Int63n panics on a non-positive bound, which a BaseDelay
+		// under 2ns would otherwise reach.
+		return 0
+	}
+	return time.Duration(rand.Int63n(half))
+}
+
+func sleepBackoff(ctx context.Context, err error, attempt int, base, max time.Duration) bool {
+	d := backoffFor(err, attempt, base, max)
 	select {
-	case <-time.After(d + jitter):
+	case <-time.After(d + jitterFor(d)):
 		return true
 	case <-ctx.Done():
 		return false

@@ -28,6 +28,7 @@ type Adapter struct {
 	provider llmgate.Provider
 	model    string
 	modelSet bool // true if model came from config (pass it as a per-call option)
+	baseURL  string
 	countTok func(ctx context.Context, text string) (int, error)
 }
 
@@ -38,6 +39,11 @@ type Adapter struct {
 func NewAdapter(m llms.Model, provider llmgate.Provider, model string, modelSet bool) *Adapter {
 	return &Adapter{m: m, provider: provider, model: model, modelSet: modelSet}
 }
+
+// SetBaseURL records the endpoint the provider was pointed at, so error
+// messages can name it. Providers call this when a custom BaseURL is
+// configured; it is diagnostic only and does not affect routing.
+func (a *Adapter) SetBaseURL(u string) { a.baseURL = u }
 
 // SetCountTokens installs an optional token-counting function used by
 // CountTokens. Providers may install a tokenizer in their New().
@@ -91,7 +97,7 @@ func (a *Adapter) Complete(ctx context.Context, req llmgate.Request) (*llmgate.R
 		return nil, fmt.Errorf("%s: %w", a.provider, err)
 	}
 	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("%s: empty response", a.provider)
+		return nil, a.emptyResponseErr(req)
 	}
 
 	folded := foldChoices(resp.Choices)
@@ -229,6 +235,49 @@ func warnUnreported(provider llmgate.Provider, model string) {
 	if _, loaded := unreportedSeen.LoadOrStore(string(provider)+"/"+model, struct{}{}); !loaded {
 		UnreportedUsageFunc(provider, model)
 	}
+}
+
+// emptyResponseErr builds the error for a call that succeeded at the
+// transport layer but carried no content.
+//
+// The bare "empty response" this used to return is close to useless when
+// the cause is a misconfigured gateway. OpenAI- and Anthropic-compatible
+// endpoints frequently answer HTTP 200 with an error envelope in the
+// body — z.ai returns {"code":500,"msg":"404 NOT_FOUND"} for a base URL
+// missing its version segment — which arrives here as a successful call
+// with zero choices. Naming the endpoint and model turns an afternoon of
+// debugging into a glance, and classifying it as ErrClassGateway stops
+// the retry middleware burning four attempts on a permanent fault.
+func (a *Adapter) emptyResponseErr(req llmgate.Request) error {
+	model := req.Model
+	if model == "" {
+		model = a.model
+	}
+
+	msg := fmt.Sprintf("empty response for model %q", model)
+	if a.baseURL != "" {
+		msg += fmt.Sprintf(" from %s", a.baseURL)
+		if !hasVersionSegment(a.baseURL) {
+			msg += " — the base URL has no version segment (e.g. /v1);" +
+				" many gateways answer 200 with an error body when the path is wrong"
+		}
+	}
+
+	return &llmgate.LLMError{
+		Class:    llmgate.ErrClassGateway,
+		Provider: a.provider,
+		Message:  msg,
+	}
+}
+
+// versionSegment matches a trailing API version path element.
+var versionSegment = regexp.MustCompile(`/v\d+(/.*)?$`)
+
+// hasVersionSegment reports whether a base URL carries an API version
+// path element. Its absence is the single most common cause of a gateway
+// returning a 200-with-error-body.
+func hasVersionSegment(base string) bool {
+	return versionSegment.MatchString(strings.TrimSuffix(base, "/"))
 }
 
 // folded is one logical reply assembled from every choice a provider

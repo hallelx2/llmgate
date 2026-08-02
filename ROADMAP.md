@@ -12,12 +12,16 @@ Design doc and long-form context still live in the engine repo:
 | Phase 0 — foundation (interface, providers, mock) | Shipped |
 | Phase 1 — swap to langchaingo | Shipped |
 | Phase 2 — router / cost / capabilities / middleware (retry, budget, cache) | Shipped |
-| Phase 3 — streaming + tool use | Deferred |
+| Phase 3a — tool use | Shipped |
+| Phase 3b — streaming | Deferred |
 | Phase 4 — independent release cadence (CI, release workflow, pkg.go.dev) | Shipped |
 
-Phases 0–2 and 4 cover everything `vectorless-engine` exercises today.
-Phase 3 is deferred — the interface types are declared, no caller
-needs the behaviour yet, and we'll wire it when one does.
+Tool calling shipped: the adapter translates `Request.Tools` into
+provider tool declarations and maps tool calls back onto
+`Response.ToolCalls`, across all three providers.
+
+Streaming is still deferred — the interface types are declared and no
+provider implements them.
 
 ## Deferred — pick up when a caller needs it
 
@@ -34,17 +38,6 @@ don't forget the shape of the work.
 - Middleware implications: `cache.New` should replay cached responses
   as a single chunk; `retry.New` should only retry pre-first-chunk
   failures; `budget.New` debits on stream completion.
-
-### Tool use / function calling
-
-- Types (`Tool`, `ToolCall`, `ToolResult`) declared on `Request` /
-  `Response`; adapter currently ignores them.
-- Langchaingo has `llms.Tool` and per-provider call/response plumbing.
-  The internal adapter needs a two-way translation: llmgate tools →
-  `llms.Tool` on the way in, `llms.ContentChoice.ToolCalls` →
-  `Response.ToolCalls` on the way out.
-- Each provider subpackage grows a capability flag if the backend
-  doesn't support tools (some Gemini models don't).
 
 ### Native `CountTokens` per provider
 
@@ -75,5 +68,7 @@ don't forget the shape of the work.
 - Per-provider default capability sets in `capabilities/` — today the
   defaults are a one-size-fits-all guess. Split per provider-model
   when a caller relies on the flags for routing.
-- Pricing table drift — prices change. A future job could scrape
-  vendor pricing pages weekly and open a PR against `pricing/`.
+- Pricing table drift — addressed by `pricing.UseRemote`, which layers
+  a refreshed snapshot from LiteLLM or OpenRouter over the embedded
+  table. Still open: a scheduled job to regenerate the embedded
+  defaults so the offline path does not age either.
