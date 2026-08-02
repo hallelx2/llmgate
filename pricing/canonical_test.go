@@ -27,6 +27,12 @@ func TestCanonical(t *testing.T) {
 
 		// Bedrock, with and without a cross-region prefix.
 		{"anthropic.claude-sonnet-4-5-v1:0", "claude-sonnet-4-5"},
+		// Bedrock stacks a date and a version on the same ID. Both have to
+		// come off, or the dated cloud IDs key separately from the plain
+		// dated ID and pick up the regional premium.
+		{"claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4-5"},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4-5"},
+		{"bedrock/us-gov-west-1/claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4-5"},
 		{"us.anthropic.claude-opus-4-1-v1:0", "claude-opus-4-1"},
 
 		// Aliases and casing.
