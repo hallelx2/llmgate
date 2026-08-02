@@ -91,8 +91,20 @@ func Canonical(model string) string {
 	// so a lookup for "claude-sonnet-4-5-20250929" landed in a bucket
 	// holding only regional and GovCloud rates and quietly billed the
 	// 10-20% premium.
+	qualified := s
 	s = versionSuffix.ReplaceAllString(s, "")
 	s = dateSuffix.ReplaceAllString(s, "")
+
+	// Stripping the qualifiers must not strip away the model itself.
+	// "anthropic.claude-v1" reduces to a bare "claude", and since
+	// longestPrefix matches at segment boundaries, that key then answers
+	// for every Claude model the book does not list explicitly:
+	// claude-haiku-3-5 resolved to Claude 1's 8.00/24.00 rather than its
+	// own 0.80/4.00, a 10x over-report. An ID with no version left is a
+	// family name, not a model, so keep the qualified form.
+	if !strings.ContainsAny(s, "0123456789") {
+		return qualified
+	}
 
 	return s
 }

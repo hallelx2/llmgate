@@ -12,6 +12,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Price is the USD cost per 1,000,000 tokens for a given model.
@@ -39,52 +40,13 @@ type Price struct {
 	ReasoningPerMTok float64
 }
 
-// defaultPrices are public list prices as of April 2026. Refresh as
-// providers update.
-//
-// Keys are canonical base IDs. Dated, prefixed, and gateway-qualified
-// variants resolve here through Canonical, so there is no need to add
-// "claude-sonnet-4-5-20250929" alongside "claude-sonnet-4-5".
-var defaultPrices = map[string]Price{
-	// ── Anthropic ─────────────────────────────────────────────────
-	// Cache rates are Anthropic's published 1.25x write / 0.1x read.
-	"claude-sonnet-4-5": {InputPerMTok: 3.00, OutputPerMTok: 15.00, CacheWritePerMTok: 3.75, CacheReadPerMTok: 0.30},
-	"claude-sonnet-4":   {InputPerMTok: 3.00, OutputPerMTok: 15.00, CacheWritePerMTok: 3.75, CacheReadPerMTok: 0.30},
-	"claude-opus-4-1":   {InputPerMTok: 15.00, OutputPerMTok: 75.00, CacheWritePerMTok: 18.75, CacheReadPerMTok: 1.50},
-	"claude-haiku-4-5":  {InputPerMTok: 1.00, OutputPerMTok: 5.00, CacheWritePerMTok: 1.25, CacheReadPerMTok: 0.10},
-	"claude-haiku-3-5":  {InputPerMTok: 0.80, OutputPerMTok: 4.00, CacheWritePerMTok: 1.00, CacheReadPerMTok: 0.08},
-
-	// ── OpenAI ────────────────────────────────────────────────────
-	// Cached input bills at 0.5x; OpenAI caches implicitly, so there is
-	// no separate write charge.
-	"gpt-4o":       {InputPerMTok: 2.50, OutputPerMTok: 10.00, CacheReadPerMTok: 1.25},
-	"gpt-4o-mini":  {InputPerMTok: 0.15, OutputPerMTok: 0.60, CacheReadPerMTok: 0.075},
-	"gpt-4.1":      {InputPerMTok: 2.00, OutputPerMTok: 8.00, CacheReadPerMTok: 0.50},
-	"gpt-4.1-mini": {InputPerMTok: 0.40, OutputPerMTok: 1.60, CacheReadPerMTok: 0.10},
-	"gpt-4.1-nano": {InputPerMTok: 0.10, OutputPerMTok: 0.40, CacheReadPerMTok: 0.025},
-	"o3":           {InputPerMTok: 2.00, OutputPerMTok: 8.00, CacheReadPerMTok: 0.50},
-	"o3-mini":      {InputPerMTok: 1.10, OutputPerMTok: 4.40, CacheReadPerMTok: 0.55},
-	"o4-mini":      {InputPerMTok: 1.10, OutputPerMTok: 4.40, CacheReadPerMTok: 0.275},
-
-	// ── Google ────────────────────────────────────────────────────
-	// Cached content bills at 0.25x.
-	"gemini-2.5-flash": {InputPerMTok: 0.15, OutputPerMTok: 0.60, CacheReadPerMTok: 0.0375},
-	"gemini-2.5-pro":   {InputPerMTok: 1.25, OutputPerMTok: 10.00, CacheReadPerMTok: 0.3125},
-	"gemini-2.0-flash": {InputPerMTok: 0.10, OutputPerMTok: 0.40, CacheReadPerMTok: 0.025},
-
-	// ── Zhipu / Z.ai GLM (public Z.ai API list prices, added May 2026) ─
-	// The family vectorless runs in production, through z.ai's
-	// Anthropic-compatible gateway.
-	"glm-4.6":     {InputPerMTok: 0.60, OutputPerMTok: 2.20, CacheReadPerMTok: 0.11},
-	"glm-4.5":     {InputPerMTok: 0.60, OutputPerMTok: 2.20, CacheReadPerMTok: 0.11},
-	"glm-4.5-air": {InputPerMTok: 0.20, OutputPerMTok: 1.10, CacheReadPerMTok: 0.03},
-}
+//go:generate go run ./gen
 
 // The price book resolves in three layers, most authoritative first:
 //
 //  1. overrides  — explicit Register calls, always win
 //  2. remote     — a refreshed snapshot, when one has been installed
-//  3. defaults   — the table above, compiled in and always available
+//  3. defaults   — defaults_gen.go, compiled in and always available
 //
 // Every layer is optional except the last, and a lookup falls through on
 // a miss. The point is that a remote refresh can never leave the library
@@ -279,6 +241,20 @@ func ComputeWithOK(model string, in, out int) (float64, bool) {
 func Compute(model string, in, out int) float64 {
 	cost, _ := ComputeTokens(model, Tokens{Input: in, Output: out})
 	return cost
+}
+
+// DefaultsAsOf reports when the compiled-in price table was generated from
+// the upstream feed.
+//
+// AsOf tells you the vintage of the remote snapshot, and reports the zero
+// time when there is none. This is the answer for the other case: how old
+// the rates behind a cost figure are when nothing remote is installed.
+func DefaultsAsOf() time.Time {
+	t, err := time.Parse(time.RFC3339, defaultsAsOf)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 // KnownModels returns every model ID with pricing data, across all three

@@ -1,0 +1,46 @@
+name: price drift
+
+# The embedded price table answers every lookup when UseRemote is off, the
+# network is down, or the first refresh is still in flight. Left alone it
+# rots: gemini-2.5-flash sat at an output rate of 0.60 against a real 2.50
+# for months, under-reporting spend on that model by more than 4x.
+#
+# This job regenerates the table from the live feed once a week and fails if
+# the result differs from what is committed. A failure is not a broken
+# build — it means a vendor changed a price and the table needs regenerating.
+
+on:
+  schedule:
+    # Mondays, 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: embedded price table vs live feed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Regenerate the embedded table
+        run: go generate ./pricing
+
+      - name: Fail if the committed table has drifted
+        run: |
+          if ! git diff --exit-code -- pricing/defaults_gen.go; then
+            echo
+            echo "::error::The embedded price table no longer matches the upstream feed."
+            echo "A vendor has changed a price. Run 'go generate ./pricing', review the"
+            echo "diff above, and commit it."
+            exit 1
+          fi
+          echo "Embedded price table matches the live feed."
