@@ -179,7 +179,8 @@ func TestPricedFlag(t *testing.T) {
 // TestGLMPriced guards the specific regression that made the benchmark read
 // $0: glm-4.6 must now compute a real cost.
 func TestGLMPriced(t *testing.T) {
-	if cost, ok := pricing.ComputeWithOK("glm-4.6", 10000, 1000); !ok || cost <= 0 {
+	tk := pricing.Tokens{Input: 10000, Output: 1000}
+	if cost, ok := pricing.ComputeTokens("glm-4.6", tk); !ok || cost <= 0 {
 		t.Fatalf("glm-4.6 should be priced with cost>0, got ok=%v cost=%v", ok, cost)
 	}
 }

@@ -126,6 +126,80 @@ func main() {
 }
 ```
 
+## Cost accounting
+
+Every `Response` carries a `Usage` with the token breakdown split by
+billing tier, not just a prompt/completion pair:
+
+```go
+resp.Usage.InputTokens      // uncached prompt tokens
+resp.Usage.CacheWriteTokens // written to the prompt cache (1.25x on Anthropic)
+resp.Usage.CacheReadTokens  // served from cache (0.1x Anthropic, 0.5x OpenAI, 0.25x Google)
+resp.Usage.ReasoningTokens  // thinking tokens — a subset of OutputTokens
+resp.Usage.CostUSD
+```
+
+The providers disagree about whether cached tokens are counted inside the
+prompt total — Anthropic reports them alongside, OpenAI and Google report
+them within — so llmgate normalizes to the disjoint form. `InputTokens +
+CacheWriteTokens + CacheReadTokens` is the whole prompt on every provider.
+
+Three flags say how much to trust the number:
+
+| Flag | Meaning when false |
+|---|---|
+| `Priced` | no price-book entry — `CostUSD` is **unknown**, not zero |
+| `TokensReported` | the provider returned no counts |
+| `Estimated` | (when true) counts came from a local tokenizer, so cost is approximate |
+
+That distinction matters: a `CostUSD` of 0 with `Priced` true asserts the
+call was free, which it never is. When a provider reports no usage at all,
+llmgate estimates from a tokenizer and flags it rather than reporting zero.
+
+### Model IDs are normalized
+
+Lookups resolve dated, prefixed, and gateway-qualified IDs to their base
+model, so none of these price at $0:
+
+```
+claude-sonnet-4-5-20250929        -> claude-sonnet-4-5
+models/gemini-2.5-flash           -> gemini-2.5-flash
+us.anthropic.claude-opus-4-1-v1:0 -> claude-opus-4-1
+z-ai/glm-4.6                      -> glm-4.6
+```
+
+Rates are keyed by model ID alone, never by provider — a model served
+through a gateway that speaks another vendor's protocol (GLM over an
+Anthropic-compatible endpoint, say) still prices correctly.
+
+### Live prices (opt-in)
+
+The compiled-in table drifts as vendors change rates. No vendor publishes
+machine-readable pricing, so `UseRemote` layers a community aggregate over
+it:
+
+```go
+stop, err := pricing.UseRemote(ctx, pricing.RemoteConfig{
+    CacheDir: "/var/cache/llmgate", // survive restarts
+    OnError:  func(src string, err error) { log.Warn("price refresh", "src", src, "err", err) },
+})
+defer stop()
+```
+
+Sources default to [LiteLLM's price table][litellm] then
+[OpenRouter's model API][openrouter], both public and unauthenticated.
+
+This is **opt-in and stays that way** — importing `pricing` performs no
+network I/O. Resolution is `Register` overrides → remote snapshot →
+embedded table, and it fails open at every layer: lookups never block on
+the network, a failed fetch keeps the previous snapshot, and a snapshot
+whose rates have drifted more than 10x from the embedded values is
+rejected as corrupt rather than adopted. `pricing.AsOf()` reports the
+vintage of whatever is loaded.
+
+[litellm]: https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+[openrouter]: https://openrouter.ai/api/v1/models
+
 ## Design principles
 
 - **The interface is tiny.** `Complete`, `CountTokens`, later

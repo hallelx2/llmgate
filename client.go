@@ -77,10 +77,32 @@ type Request struct {
 }
 
 // Usage is normalized token + cost accounting for one call.
+//
+// The token fields are disjoint: InputTokens counts only uncached prompt
+// tokens, so InputTokens + CacheWriteTokens + CacheReadTokens is the full
+// prompt size. Providers disagree about this — Anthropic reports cache
+// tokens alongside input, OpenAI and Google report them inside it — and
+// the adapter normalizes to the disjoint form so a caller can add the
+// fields without double-counting.
 type Usage struct {
-	InputTokens  int
+	// InputTokens is prompt tokens billed at the full input rate, i.e.
+	// excluding anything served from or written to the prompt cache.
+	InputTokens int
+	// OutputTokens is all generated tokens, including ReasoningTokens
+	// where the provider bills reasoning as output (all of them today).
 	OutputTokens int
-	TotalTokens  int
+	// TotalTokens is every token the call touched, cached or not.
+	TotalTokens int
+
+	// CacheWriteTokens is prompt tokens written into the provider's cache
+	// this call. Billed at a premium — 1.25x input on Anthropic.
+	CacheWriteTokens int
+	// CacheReadTokens is prompt tokens served from cache. Billed at a
+	// discount — 0.1x input on Anthropic, 0.5x on OpenAI, 0.25x on Google.
+	CacheReadTokens int
+	// ReasoningTokens is the thinking/reasoning portion of OutputTokens.
+	// Reported for visibility; it is a subset, not an addition.
+	ReasoningTokens int
 
 	// CostUSD is the computed price for this call. It is 0 when the model
 	// has no price-book entry — inspect Priced to tell that apart from a
@@ -92,6 +114,17 @@ type Usage struct {
 	// call was free); callers reporting spend should treat the value as
 	// unknown rather than zero.
 	Priced bool
+
+	// TokensReported is true when the provider actually returned token
+	// counts. When false the counts above did not come from the provider,
+	// and a CostUSD of 0 with Priced true would otherwise be an assertion
+	// that the call was free — which it never is.
+	TokensReported bool
+
+	// Estimated is true when the counts were derived from a local
+	// tokenizer because the provider reported none. CostUSD is then an
+	// approximation, typically within 10-20%, rather than a zero.
+	Estimated bool
 }
 
 // Response is the model's reply.
