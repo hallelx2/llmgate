@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"hash"
 	"math"
 	"sync"
 	"time"
@@ -91,8 +92,17 @@ func cacheKey(req llmgate.Request) string {
 	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[:], uint64(req.MaxTokens))
 	h.Write(buf[:])
-	binary.LittleEndian.PutUint64(buf[:], math.Float64bits(req.Temperature))
-	h.Write(buf[:])
+	// Sampling knobs are optional: an unset value must hash differently
+	// from an explicit one, so write a presence byte before the bits.
+	writeOptFloat(h, buf[:], req.Temperature)
+	writeOptFloat(h, buf[:], req.TopP)
+	if req.Seed != nil {
+		h.Write([]byte{1})
+		binary.LittleEndian.PutUint64(buf[:], uint64(*req.Seed))
+		h.Write(buf[:])
+	} else {
+		h.Write([]byte{0})
+	}
 	if req.JSONMode {
 		h.Write([]byte{1})
 	} else {
@@ -109,6 +119,19 @@ func cacheKey(req llmgate.Request) string {
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// writeOptFloat hashes an optional float as a presence byte plus, when
+// set, its IEEE-754 bits. Without the presence byte an unset field and an
+// explicit 0 would collide.
+func writeOptFloat(h hash.Hash, buf []byte, v *float64) {
+	if v == nil {
+		h.Write([]byte{0})
+		return
+	}
+	h.Write([]byte{1})
+	binary.LittleEndian.PutUint64(buf, math.Float64bits(*v))
+	h.Write(buf)
 }
 
 type lruCache struct {

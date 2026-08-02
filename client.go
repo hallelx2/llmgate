@@ -39,10 +39,23 @@ type Message struct {
 
 // Request is a single completion request.
 type Request struct {
-	Model       string
-	Messages    []Message
-	MaxTokens   int
-	Temperature float64
+	Model     string
+	Messages  []Message
+	MaxTokens int
+
+	// Temperature is the sampling temperature. nil means "leave it to the
+	// provider", which is NOT the same as zero — provider defaults sit
+	// around 1.0. Pass Float64(0) for deterministic sampling; a bare 0
+	// would be indistinguishable from unset.
+	Temperature *float64
+
+	// TopP is nucleus-sampling cutoff. nil leaves it unset. Same
+	// zero-is-meaningful reasoning as Temperature.
+	TopP *float64
+
+	// Seed requests deterministic sampling where the provider supports
+	// it. nil leaves it unset. Best-effort — no provider guarantees it.
+	Seed *int
 
 	// JSONMode asks the provider to return a JSON object that conforms to
 	// JSONSchema. Providers that don't support structured outputs natively
@@ -89,6 +102,12 @@ type Response struct {
 	Model        string
 	FinishReason string
 
+	// ReasoningContent is the model's thinking / reasoning trace when the
+	// provider exposes it separately from the answer (Claude extended
+	// thinking, OpenAI o-series). Empty when the model didn't reason or
+	// the provider folds it into Content.
+	ReasoningContent string
+
 	// Usage is the normalized accounting for this call.
 	Usage Usage
 
@@ -101,6 +120,18 @@ type Response struct {
 	// replied with content only.
 	ToolCalls []ToolCall
 }
+
+// Ptr returns a pointer to v. It exists so optional Request fields can be
+// set inline: Temperature: llmgate.Ptr(0.7).
+func Ptr[T any](v T) *T { return &v }
+
+// Float64 returns a pointer to v. Prefer it over Ptr for the sampling
+// fields, where the untyped-constant form reads better:
+// Temperature: llmgate.Float64(0).
+func Float64(v float64) *float64 { return &v }
+
+// Int returns a pointer to v, for Request.Seed.
+func Int(v int) *int { return &v }
 
 // Client is the provider-agnostic contract.
 type Client interface {
