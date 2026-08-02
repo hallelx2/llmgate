@@ -3,7 +3,7 @@ module github.com/hallelx2/llmgate
 go 1.25.0
 
 require (
-	github.com/pkoukk/tiktoken-go v0.1.6
+	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/tmc/langchaingo v0.1.14
 )
 
