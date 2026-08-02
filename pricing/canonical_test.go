@@ -120,6 +120,9 @@ func TestRegisterBeatsNormalization(t *testing.T) {
 	const id = "claude-sonnet-4-5-20250929"
 	pinned := pricing.Price{InputPerMTok: 99, OutputPerMTok: 199}
 	pricing.Register(id, pinned)
+	// Undo it: overrides are process-global, and a leaked pin silently
+	// changes what every later test prices.
+	t.Cleanup(func() { pricing.Unregister(id) })
 
 	got, ok := pricing.Lookup(id)
 	if !ok || got != pinned {
