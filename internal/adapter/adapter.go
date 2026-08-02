@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/pkoukk/tiktoken-go"
 	"github.com/tmc/langchaingo/llms"
@@ -106,22 +107,128 @@ func (a *Adapter) Complete(ctx context.Context, req llmgate.Request) (*llmgate.R
 		ToolCalls:        folded.toolCalls,
 	}
 
-	// Token usage is reported provider-by-provider under slightly different
-	// keys. Try the common ones.
-	in := getInt(folded.genInfo, "InputTokens", "PromptTokens", "input_tokens", "prompt_tokens")
-	outTok := getInt(folded.genInfo, "OutputTokens", "CompletionTokens", "output_tokens", "completion_tokens")
-	out.InputTokens = in
-	out.OutputTokens = outTok
-	cost, priced := pricing.ComputeWithOK(model, in, outTok)
-	out.Usage = llmgate.Usage{
-		InputTokens:  in,
-		OutputTokens: outTok,
-		TotalTokens:  in + outTok,
-		CostUSD:      cost,
-		Priced:       priced,
-	}
+	out.Usage = a.usage(ctx, model, folded, req, out.Content)
+	out.InputTokens = out.Usage.InputTokens
+	out.OutputTokens = out.Usage.OutputTokens
 
 	return out, nil
+}
+
+// usage builds the normalized accounting for one call: it reads whatever
+// token breakdown the provider reported, estimates when it reported none,
+// and prices the result.
+func (a *Adapter) usage(ctx context.Context, model string, f folded, req llmgate.Request, content string) llmgate.Usage {
+	tk, reported := extractTokens(f.genInfo)
+
+	u := llmgate.Usage{TokensReported: reported}
+	if !reported {
+		// The provider told us nothing. Estimating is far better than
+		// reporting zero: a zero paired with Priced:true asserts the call
+		// was free, which it never is. An estimate is typically within
+		// 10-20% and is labelled as such.
+		tk = a.estimateTokens(ctx, req, content)
+		u.Estimated = true
+		warnUnreported(a.provider, model)
+	}
+
+	u.InputTokens = tk.Input
+	u.OutputTokens = tk.Output
+	u.CacheWriteTokens = tk.CacheWrite
+	u.CacheReadTokens = tk.CacheRead
+	u.ReasoningTokens = tk.Reasoning
+	u.TotalTokens = tk.Input + tk.Output + tk.CacheWrite + tk.CacheRead
+	u.CostUSD, u.Priced = pricing.ComputeTokens(model, tk)
+	return u
+}
+
+// extractTokens reads the token breakdown out of a provider's
+// GenerationInfo and normalizes it so the fields are disjoint.
+//
+// The providers disagree about whether cached tokens are counted inside
+// the prompt total. Anthropic reports cache_creation and cache_read
+// *alongside* input_tokens; OpenAI and Google report cached tokens
+// *within* the prompt count. Both are normalized to "Input excludes
+// everything cached" so a caller can sum the fields without
+// double-counting — and, more importantly, so cached tokens are billed at
+// their own rate instead of silently costing nothing.
+func extractTokens(gi map[string]any) (pricing.Tokens, bool) {
+	if !hasUsage(gi) {
+		return pricing.Tokens{}, false
+	}
+
+	tk := pricing.Tokens{
+		Input:  getInt(gi, "InputTokens", "PromptTokens", "input_tokens", "prompt_tokens"),
+		Output: getInt(gi, "OutputTokens", "CompletionTokens", "output_tokens", "completion_tokens"),
+		// Anthropic is the only provider that writes to the cache
+		// explicitly, and the only one that reports the write separately.
+		CacheWrite: getInt(gi, "CacheCreationInputTokens", "cache_creation_input_tokens"),
+		CacheRead: getInt(gi, "CacheReadInputTokens", "PromptCachedTokens", "CachedTokens",
+			"cache_read_input_tokens", "cached_tokens"),
+		Reasoning: getInt(gi, "ReasoningTokens", "ThinkingTokens", "CompletionReasoningTokens", "reasoning_tokens"),
+	}
+
+	// Google publishes the already-subtracted figure; prefer it over
+	// doing the arithmetic ourselves.
+	if n, ok := lookupInt(gi, "NonCachedInputTokens"); ok {
+		tk.Input = n
+		return tk, true
+	}
+
+	// OpenAI and Google fold cache reads into the prompt count, Anthropic
+	// does not. Detect which by asking whether subtracting would go
+	// negative — that only happens when the counts were already disjoint.
+	if tk.CacheRead > 0 && tk.Input >= tk.CacheRead {
+		tk.Input -= tk.CacheRead
+	}
+
+	return tk, true
+}
+
+// estimateTokens approximates a call's token usage from the request and
+// the returned text, for providers that report no usage at all.
+func (a *Adapter) estimateTokens(ctx context.Context, req llmgate.Request, content string) pricing.Tokens {
+	var prompt strings.Builder
+	for _, m := range req.Messages {
+		prompt.WriteString(m.Content)
+		prompt.WriteByte('\n')
+		for _, tc := range m.ToolCalls {
+			prompt.WriteString(tc.Name)
+			prompt.Write(tc.Input)
+		}
+	}
+	for _, t := range req.Tools {
+		prompt.WriteString(t.Name)
+		prompt.WriteString(t.Description)
+		prompt.Write(t.InputSchema)
+	}
+
+	in, err := a.CountTokens(ctx, prompt.String())
+	if err != nil {
+		in = len(prompt.String()) / 4
+	}
+	out, err := a.CountTokens(ctx, content)
+	if err != nil {
+		out = len(content) / 4
+	}
+	return pricing.Tokens{Input: in, Output: out}
+}
+
+// UnreportedUsageFunc is invoked, when non-nil, the first time a
+// provider/model pair returns a response with no token counts. Wire it to
+// a logger: an unreported call is priced from a local estimate, and a
+// caller reconciling against an invoice needs to know which calls those
+// were.
+var UnreportedUsageFunc func(provider llmgate.Provider, model string)
+
+var unreportedSeen sync.Map // provider+model -> struct{}
+
+func warnUnreported(provider llmgate.Provider, model string) {
+	if UnreportedUsageFunc == nil {
+		return
+	}
+	if _, loaded := unreportedSeen.LoadOrStore(string(provider)+"/"+model, struct{}{}); !loaded {
+		UnreportedUsageFunc(provider, model)
+	}
 }
 
 // folded is one logical reply assembled from every choice a provider
@@ -394,10 +501,18 @@ func toLangchainRole(r llmgate.Role) llms.ChatMessageType {
 }
 
 // getInt pulls the first present integer under the given keys out of a
-// map[string]any, coping with int / int64 / float64 values.
+// map[string]any, or 0 when none are present.
 func getInt(m map[string]any, keys ...string) int {
+	n, _ := lookupInt(m, keys...)
+	return n
+}
+
+// lookupInt is getInt with presence reported separately, so a genuine 0
+// can be told apart from a missing key. Copes with the several numeric
+// types providers decode into.
+func lookupInt(m map[string]any, keys ...string) (int, bool) {
 	if m == nil {
-		return 0
+		return 0, false
 	}
 	for _, k := range keys {
 		v, ok := m[k]
@@ -406,20 +521,20 @@ func getInt(m map[string]any, keys ...string) int {
 		}
 		switch x := v.(type) {
 		case int:
-			return x
+			return x, true
 		case int32:
-			return int(x)
+			return int(x), true
 		case int64:
-			return int(x)
+			return int(x), true
 		case uint32:
-			return int(x)
+			return int(x), true
 		case uint64:
-			return int(x)
+			return int(x), true
 		case float64:
-			return int(x)
+			return int(x), true
 		}
 	}
-	return 0
+	return 0, false
 }
 
 // httpStatusRe matches "status code: NNN" or "status NNN" or just a
