@@ -38,7 +38,7 @@ func main() {
 			{Role: llmgate.RoleUser, Content: "In one sentence: what is vectorless retrieval?"},
 		},
 		MaxTokens:   1024,
-		Temperature: 0.2,
+		Temperature: llmgate.Float64(0.2),
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "complete:", err)

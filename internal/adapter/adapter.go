@@ -58,8 +58,17 @@ func (a *Adapter) Complete(ctx context.Context, req llmgate.Request) (*llmgate.R
 	if req.MaxTokens > 0 {
 		opts = append(opts, llms.WithMaxTokens(req.MaxTokens))
 	}
-	if req.Temperature != 0 {
-		opts = append(opts, llms.WithTemperature(req.Temperature))
+	// Nil, not zero, means "unset" for the sampling knobs — a caller asking
+	// for temperature 0 wants determinism, and dropping it silently leaves
+	// the request at the provider default (~1.0).
+	if req.Temperature != nil {
+		opts = append(opts, llms.WithTemperature(*req.Temperature))
+	}
+	if req.TopP != nil {
+		opts = append(opts, llms.WithTopP(*req.TopP))
+	}
+	if req.Seed != nil {
+		opts = append(opts, llms.WithSeed(*req.Seed))
 	}
 	if len(req.Tools) > 0 {
 		opts = append(opts, llms.WithTools(toLangchainTools(req.Tools)))
@@ -84,22 +93,23 @@ func (a *Adapter) Complete(ctx context.Context, req llmgate.Request) (*llmgate.R
 		return nil, fmt.Errorf("%s: empty response", a.provider)
 	}
 
-	choice := resp.Choices[0]
+	folded := foldChoices(resp.Choices)
 	model := req.Model
 	if model == "" {
 		model = a.model
 	}
 	out := &llmgate.Response{
-		Content:      choice.Content,
-		Model:        model,
-		FinishReason: choice.StopReason,
-		ToolCalls:    fromLangchainToolCalls(choice),
+		Content:          folded.content,
+		ReasoningContent: folded.reasoning,
+		Model:            model,
+		FinishReason:     folded.finishReason,
+		ToolCalls:        folded.toolCalls,
 	}
 
 	// Token usage is reported provider-by-provider under slightly different
 	// keys. Try the common ones.
-	in := getInt(choice.GenerationInfo, "InputTokens", "PromptTokens", "input_tokens", "prompt_tokens")
-	outTok := getInt(choice.GenerationInfo, "OutputTokens", "CompletionTokens", "output_tokens", "completion_tokens")
+	in := getInt(folded.genInfo, "InputTokens", "PromptTokens", "input_tokens", "prompt_tokens")
+	outTok := getInt(folded.genInfo, "OutputTokens", "CompletionTokens", "output_tokens", "completion_tokens")
 	out.InputTokens = in
 	out.OutputTokens = outTok
 	cost, priced := pricing.ComputeWithOK(model, in, outTok)
@@ -112,6 +122,96 @@ func (a *Adapter) Complete(ctx context.Context, req llmgate.Request) (*llmgate.R
 	}
 
 	return out, nil
+}
+
+// folded is one logical reply assembled from every choice a provider
+// returned.
+type folded struct {
+	content      string
+	reasoning    string
+	toolCalls    []llmgate.ToolCall
+	finishReason string
+	genInfo      map[string]any
+}
+
+// usageKeys are every key any provider uses to report token counts. A
+// choice carrying none of them has no usage to contribute.
+var usageKeys = []string{
+	"InputTokens", "PromptTokens", "input_tokens", "prompt_tokens",
+	"OutputTokens", "CompletionTokens", "output_tokens", "completion_tokens",
+}
+
+// foldChoices collapses a provider response into a single reply.
+//
+// langchaingo's Anthropic adapter returns one ContentChoice per *content
+// block*, not per completion candidate — a reply of [thinking, text] or
+// [text, tool_use] arrives as two choices. Reading Choices[0] alone
+// therefore returned an empty answer whenever the model thought first,
+// and silently dropped tool calls whenever it narrated before calling.
+//
+// Usage is taken from the first choice that reports any, never summed:
+// every block carries a copy of the same response-level usage, so adding
+// them up would multiply the bill by the block count.
+func foldChoices(choices []*llms.ContentChoice) folded {
+	var f folded
+	var content, reasoning strings.Builder
+	seenReasoning := map[string]bool{}
+
+	appendReasoning := func(s string) {
+		// Anthropic repeats ThinkingContent on the text block as well as
+		// the thinking block; dedupe so it isn't emitted twice.
+		if s == "" || seenReasoning[s] {
+			return
+		}
+		seenReasoning[s] = true
+		reasoning.WriteString(s)
+	}
+
+	for _, c := range choices {
+		if c == nil {
+			continue
+		}
+		content.WriteString(c.Content)
+		appendReasoning(c.ReasoningContent)
+		if s, ok := c.GenerationInfo["ThinkingContent"].(string); ok {
+			appendReasoning(s)
+		}
+		f.toolCalls = append(f.toolCalls, fromLangchainToolCalls(c)...)
+		if c.StopReason != "" {
+			f.finishReason = c.StopReason
+		}
+		if f.genInfo == nil && hasUsage(c.GenerationInfo) {
+			f.genInfo = c.GenerationInfo
+		}
+	}
+
+	// No choice reported usage — keep the first non-nil map so any other
+	// metadata is still reachable downstream.
+	if f.genInfo == nil {
+		for _, c := range choices {
+			if c != nil && c.GenerationInfo != nil {
+				f.genInfo = c.GenerationInfo
+				break
+			}
+		}
+	}
+
+	f.content = content.String()
+	f.reasoning = reasoning.String()
+	return f
+}
+
+// hasUsage reports whether m carries any recognised token-count key.
+func hasUsage(m map[string]any) bool {
+	if m == nil {
+		return false
+	}
+	for _, k := range usageKeys {
+		if _, ok := m[k]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // toLangchainTools converts our provider-agnostic tool declarations into
