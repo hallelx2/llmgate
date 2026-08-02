@@ -14,26 +14,26 @@ type Price struct {
 // Source: official pricing pages for Anthropic, OpenAI, and Google.
 var defaultPrices = map[string]Price{
 	// ── Anthropic ─────────────────────────────────────────────────
-	"claude-sonnet-4-5":   {InputPerMTok: 3.00, OutputPerMTok: 15.00},
+	"claude-sonnet-4-5":        {InputPerMTok: 3.00, OutputPerMTok: 15.00},
 	"claude-sonnet-4-20250514": {InputPerMTok: 3.00, OutputPerMTok: 15.00},
-	"claude-opus-4-1":     {InputPerMTok: 15.00, OutputPerMTok: 75.00},
-	"claude-haiku-4-5":    {InputPerMTok: 1.00, OutputPerMTok: 5.00},
-	"claude-haiku-3-5":    {InputPerMTok: 0.80, OutputPerMTok: 4.00},
+	"claude-opus-4-1":          {InputPerMTok: 15.00, OutputPerMTok: 75.00},
+	"claude-haiku-4-5":         {InputPerMTok: 1.00, OutputPerMTok: 5.00},
+	"claude-haiku-3-5":         {InputPerMTok: 0.80, OutputPerMTok: 4.00},
 
 	// ── OpenAI ────────────────────────────────────────────────────
-	"gpt-4o":              {InputPerMTok: 2.50, OutputPerMTok: 10.00},
-	"gpt-4o-mini":         {InputPerMTok: 0.15, OutputPerMTok: 0.60},
-	"gpt-4.1":             {InputPerMTok: 2.00, OutputPerMTok: 8.00},
-	"gpt-4.1-mini":        {InputPerMTok: 0.40, OutputPerMTok: 1.60},
-	"gpt-4.1-nano":        {InputPerMTok: 0.10, OutputPerMTok: 0.40},
-	"o3":                  {InputPerMTok: 2.00, OutputPerMTok: 8.00},
-	"o3-mini":             {InputPerMTok: 1.10, OutputPerMTok: 4.40},
-	"o4-mini":             {InputPerMTok: 1.10, OutputPerMTok: 4.40},
+	"gpt-4o":       {InputPerMTok: 2.50, OutputPerMTok: 10.00},
+	"gpt-4o-mini":  {InputPerMTok: 0.15, OutputPerMTok: 0.60},
+	"gpt-4.1":      {InputPerMTok: 2.00, OutputPerMTok: 8.00},
+	"gpt-4.1-mini": {InputPerMTok: 0.40, OutputPerMTok: 1.60},
+	"gpt-4.1-nano": {InputPerMTok: 0.10, OutputPerMTok: 0.40},
+	"o3":           {InputPerMTok: 2.00, OutputPerMTok: 8.00},
+	"o3-mini":      {InputPerMTok: 1.10, OutputPerMTok: 4.40},
+	"o4-mini":      {InputPerMTok: 1.10, OutputPerMTok: 4.40},
 
 	// ── Google ────────────────────────────────────────────────────
-	"gemini-2.5-flash":    {InputPerMTok: 0.15, OutputPerMTok: 0.60},
-	"gemini-2.5-pro":      {InputPerMTok: 1.25, OutputPerMTok: 10.00},
-	"gemini-2.0-flash":    {InputPerMTok: 0.10, OutputPerMTok: 0.40},
+	"gemini-2.5-flash": {InputPerMTok: 0.15, OutputPerMTok: 0.60},
+	"gemini-2.5-pro":   {InputPerMTok: 1.25, OutputPerMTok: 10.00},
+	"gemini-2.0-flash": {InputPerMTok: 0.10, OutputPerMTok: 0.40},
 
 	// ── Zhipu / Z.ai GLM (public Z.ai API list prices, added May 2026) ─
 	"glm-4.6":     {InputPerMTok: 0.60, OutputPerMTok: 2.20},
@@ -65,7 +65,7 @@ func Register(model string, p Price) {
 	prices[model] = p
 }
 
-// WarnFunc, if non-nil, is invoked once per distinct model that has no
+// WarnFunc is invoked, when non-nil, once per distinct model that has no
 // price-book entry, the first time a cost is computed for it. Wire it to a
 // logger to surface "$0 because the model is unpriced" — otherwise an
 // unpriced model is silently accounted as free, which is the failure mode
