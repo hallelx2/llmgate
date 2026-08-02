@@ -24,12 +24,13 @@ import (
 // llmgate.Client. Every Client produced by the provider subpackages is
 // an *Adapter under the hood.
 type Adapter struct {
-	m        llms.Model
-	provider llmgate.Provider
-	model    string
-	modelSet bool // true if model came from config (pass it as a per-call option)
-	baseURL  string
-	countTok func(ctx context.Context, text string) (int, error)
+	m           llms.Model
+	provider    llmgate.Provider
+	model       string
+	modelSet    bool // true if model came from config (pass it as a per-call option)
+	baseURL     string
+	promptCache bool
+	countTok    func(ctx context.Context, text string) (int, error)
 }
 
 // NewAdapter constructs an *Adapter for a given langchaingo model.
@@ -51,10 +52,14 @@ func (a *Adapter) SetCountTokens(f func(ctx context.Context, text string) (int, 
 	a.countTok = f
 }
 
+// SetPromptCache turns on the "cache the opening user message" shorthand.
+// Providers call this from their New() when the caller asked for it.
+func (a *Adapter) SetPromptCache(on bool) { a.promptCache = on }
+
 // Complete translates a Request into llms.GenerateContent, runs it, and
 // maps the ContentResponse back into an llmgate.Response.
 func (a *Adapter) Complete(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
-	msgs := toLangchainMessages(req.Messages, req.JSONMode, req.JSONSchema)
+	msgs := toLangchainMessages(withPromptCache(req.Messages, a.promptCache), req.JSONMode, req.JSONSchema)
 
 	opts := []llms.CallOption{}
 	if m := req.Model; m != "" {
@@ -473,6 +478,57 @@ func (a *Adapter) CountTokens(ctx context.Context, text string) (int, error) {
 	return len(text) / 4, nil
 }
 
+// cacheable wraps a content part in a cache-control marker when the message
+// asks for one.
+//
+// The marker only goes on user turns. langchaingo's Anthropic adapter
+// unwraps llms.CachedContent when building human messages, but its system
+// handler accepts a bare llms.TextContent and errors on anything else — so
+// marking a system message would not cache it, it would fail the request.
+// Assistant and tool turns are left alone for the same reason: a cache
+// breakpoint belongs at the end of a stable prefix, and those turns are
+// part of what varies.
+//
+// Providers without prompt caching ignore the wrapper, so this is safe to
+// apply regardless of who ends up serving the request.
+func cacheable(part llms.ContentPart, m llmgate.Message) llms.ContentPart {
+	if !m.CacheBreakpoint || m.Role != llmgate.RoleUser {
+		return part
+	}
+	return llms.WithCacheControl(part, &llms.CacheControl{Type: "ephemeral"})
+}
+
+// withPromptCache applies the provider-level "cache the opening user
+// message" shorthand.
+//
+// It defers entirely to the caller: if any message already carries a
+// breakpoint, the request is left as written. Adding a second breakpoint
+// where the caller placed one would cache a prefix they did not choose, and
+// providers cap how many breakpoints a request may carry.
+//
+// The copy is deliberate — Request.Messages belongs to the caller, and a
+// retry or a middleware chain may hand the same slice back.
+func withPromptCache(msgs []llmgate.Message, on bool) []llmgate.Message {
+	if !on {
+		return msgs
+	}
+	for _, m := range msgs {
+		if m.CacheBreakpoint {
+			return msgs
+		}
+	}
+	for i, m := range msgs {
+		if m.Role != llmgate.RoleUser || m.Content == "" {
+			continue
+		}
+		out := make([]llmgate.Message, len(msgs))
+		copy(out, msgs)
+		out[i].CacheBreakpoint = true
+		return out
+	}
+	return msgs
+}
+
 // toLangchainMessages translates our Message slice into llms.MessageContent.
 // When JSONMode is on, appends a firm "reply with JSON only" nudge to the
 // last human message — providers differ on strict JSON mode support, so the
@@ -496,7 +552,7 @@ func toLangchainMessages(msgs []llmgate.Message, jsonMode bool, schema []byte) [
 			// pair a message with tool calls. Skip the empty placeholder only
 			// when the turn is purely tool calls.
 			if m.Content != "" || len(m.ToolCalls) == 0 {
-				parts = append(parts, llms.TextContent{Text: m.Content})
+				parts = append(parts, cacheable(llms.TextContent{Text: m.Content}, m))
 			}
 			for _, tc := range m.ToolCalls {
 				parts = append(parts, llms.ToolCall{
@@ -522,14 +578,27 @@ func toLangchainMessages(msgs []llmgate.Message, jsonMode bool, schema []byte) [
 		nudge += " The object must conform to this JSON schema:\n" + string(schema)
 	}
 	// Append the nudge to the last human message, or add a new one.
+	//
+	// The last part may be wrapped in a cache-control marker, so unwrap
+	// before appending and re-wrap after. Appending to a cached block would
+	// be wrong anyway: the nudge carries a per-call schema, and changing
+	// the tail of a cached prefix invalidates it on every request. The
+	// nudge therefore lands as its own uncached part.
 	for i := len(out) - 1; i >= 0; i-- {
-		if out[i].Role == llms.ChatMessageTypeHuman {
-			if n := len(out[i].Parts); n > 0 {
-				if tc, ok := out[i].Parts[n-1].(llms.TextContent); ok {
-					out[i].Parts[n-1] = llms.TextContent{Text: tc.Text + nudge}
-					return out
-				}
-			}
+		if out[i].Role != llms.ChatMessageTypeHuman {
+			continue
+		}
+		n := len(out[i].Parts)
+		if n == 0 {
+			continue
+		}
+		switch last := out[i].Parts[n-1].(type) {
+		case llms.TextContent:
+			out[i].Parts[n-1] = llms.TextContent{Text: last.Text + nudge}
+			return out
+		case llms.CachedContent:
+			out[i].Parts = append(out[i].Parts, llms.TextContent{Text: nudge})
+			return out
 		}
 	}
 	out = append(out, llms.TextParts(llms.ChatMessageTypeHuman, nudge))
