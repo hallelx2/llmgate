@@ -35,6 +35,32 @@ type Message struct {
 	// ToolCall.ID it answers. Required on tool-result messages; ignored on
 	// all other roles.
 	ToolCallID string
+
+	// CacheBreakpoint marks this message as the end of a cacheable prefix.
+	//
+	// Everything from the start of the conversation up to and including
+	// this message is stored by the provider and re-read on later calls
+	// instead of being reprocessed. That is the single largest cost
+	// reduction available to a workload that sends a large, stable prefix
+	// on every call — a document, a schema, a long system brief. Anthropic
+	// bills a cache read at a tenth of the input rate, so a 120k-token
+	// prompt whose first 100k are cached costs roughly a third of the
+	// uncached call.
+	//
+	// Set it on the last message of the stable prefix, not on the part that
+	// changes per call: the cache matches on an exact prefix, so a
+	// breakpoint after anything variable never hits.
+	//
+	// Only providers with prompt caching act on this; the rest ignore it.
+	// It applies to user messages only — Anthropic's API takes cache
+	// markers on content blocks, and a system prompt is not one.
+	//
+	// Providers meter caching in the usage they return, so Response.Usage
+	// reports CacheWrite on the call that populates the cache and CacheRead
+	// on the calls that hit it, and cost accounting follows automatically.
+	// Caching below a provider's minimum cacheable length (1024 tokens on
+	// most Anthropic models) silently does nothing.
+	CacheBreakpoint bool
 }
 
 // Request is a single completion request.
