@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ErrorClass categorizes provider errors for routing and retry decisions.
@@ -29,6 +30,11 @@ const (
 	ErrClassTimeout
 	// ErrClassCanceled is context.Canceled.
 	ErrClassCanceled
+	// ErrClassGateway means the transport succeeded but a gateway in
+	// front of the model reported failure in the response body — often
+	// with HTTP 200. Not retryable: it is a routing or configuration
+	// fault, and repeating the call reproduces it.
+	ErrClassGateway
 )
 
 // String returns a human-readable label.
@@ -50,6 +56,8 @@ func (c ErrorClass) String() string {
 		return "timeout"
 	case ErrClassCanceled:
 		return "canceled"
+	case ErrClassGateway:
+		return "gateway"
 	default:
 		return "unknown"
 	}
@@ -78,6 +86,11 @@ type LLMError struct {
 
 	// Cause is the underlying error.
 	Cause error
+
+	// RetryAfterDur is how long the provider asked us to wait, from a
+	// Retry-After header or equivalent. Zero when the provider said
+	// nothing, in which case callers fall back to their own backoff.
+	RetryAfterDur time.Duration
 }
 
 // Error implements the error interface.
@@ -203,6 +216,20 @@ func Classify(err error) ErrorClass {
 	}
 
 	return ErrClassUnknown
+}
+
+// RetryAfter reports how long the provider asked the caller to wait
+// before retrying, if it said anything at all.
+//
+// Honouring it beats guessing: on a 429 the provider knows exactly when
+// capacity frees up, and exponential backoff either sleeps too little and
+// earns another 429 or too much and wastes wall-clock.
+func RetryAfter(err error) (time.Duration, bool) {
+	var llmErr *LLMError
+	if errors.As(err, &llmErr) && llmErr.RetryAfterDur > 0 {
+		return llmErr.RetryAfterDur, true
+	}
+	return 0, false
 }
 
 // IsRateLimited reports whether err is a rate-limit error.

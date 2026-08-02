@@ -48,5 +48,7 @@ func New(cfg Config) (llmgate.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("llmgate/anthropic: %w", err)
 	}
-	return adapter.NewAdapter(m, llmgate.ProviderAnthropic, model, cfg.Model != ""), nil
+	a := adapter.NewAdapter(m, llmgate.ProviderAnthropic, model, cfg.Model != "")
+	a.SetBaseURL(cfg.BaseURL)
+	return a, nil
 }

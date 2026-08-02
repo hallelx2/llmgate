@@ -55,18 +55,18 @@ type cacheClient struct {
 func (c *cacheClient) Complete(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 	key := cacheKey(req)
 	if resp, ok := c.c.get(key); ok {
-		clone := *resp
+		clone := cloneResponse(resp)
 		clone.FromCache = true
 		clone.Usage.CostUSD = 0
-		return &clone, nil
+		return clone, nil
 	}
 	resp, err := c.inner.Complete(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	// Store a copy so later mutations by callers don't poison the cache.
-	stored := *resp
-	c.c.put(key, &stored)
+	// Store a deep copy so later mutations by callers don't poison the
+	// cache, and hand the caller back its own response untouched.
+	c.c.put(key, cloneResponse(resp))
 	return resp, nil
 }
 
@@ -78,9 +78,21 @@ func (c *cacheClient) CountTokens(ctx context.Context, text string) (int, error)
 // Capabilities delegates to the inner client.
 func (c *cacheClient) Capabilities() capabilities.Capabilities { return capabilities.Of(c.inner) }
 
-// cacheKey hashes the request fields that change the response.
+// keyVersion salts the cache key. Bump it whenever the set of hashed
+// fields changes, so entries written by an older build are missed rather
+// than silently colliding with a different request shape.
+const keyVersion = "v2"
+
+// cacheKey hashes every request field that can change the response.
+//
+// Tool state has to be in here. During a tool loop the assistant turn
+// that requests a call very often has empty Content — the tool calls *are*
+// the payload — so hashing only role and content makes two different loop
+// states collide and the second call gets the first's answer.
 func cacheKey(req llmgate.Request) string {
 	h := sha256.New()
+	h.Write([]byte(keyVersion))
+	h.Write([]byte{0})
 	h.Write([]byte(req.Model))
 	h.Write([]byte{0})
 	for _, m := range req.Messages {
@@ -88,6 +100,16 @@ func cacheKey(req llmgate.Request) string {
 		h.Write([]byte{0})
 		h.Write([]byte(m.Content))
 		h.Write([]byte{0})
+		h.Write([]byte(m.ToolCallID))
+		h.Write([]byte{0})
+		for _, tc := range m.ToolCalls {
+			h.Write([]byte(tc.ID))
+			h.Write([]byte{0})
+			h.Write([]byte(tc.Name))
+			h.Write([]byte{0})
+			h.Write(tc.Input)
+			h.Write([]byte{0})
+		}
 	}
 	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[:], uint64(req.MaxTokens))
@@ -118,7 +140,30 @@ func cacheKey(req llmgate.Request) string {
 		h.Write(t.InputSchema)
 		h.Write([]byte{0})
 	}
+	// ToolChoice changes the answer as much as the tools do: "required"
+	// and "none" on otherwise identical requests must not collide.
+	h.Write([]byte(req.ToolChoice))
+	h.Write([]byte{0})
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// cloneResponse deep-copies the parts of a Response a caller can mutate.
+//
+// A shallow copy leaves ToolCalls and their Input bytes aliased to the
+// cached entry, so a caller that rewrites arguments in place corrupts
+// every later hit.
+func cloneResponse(r *llmgate.Response) *llmgate.Response {
+	c := *r
+	if r.ToolCalls != nil {
+		c.ToolCalls = make([]llmgate.ToolCall, len(r.ToolCalls))
+		for i, tc := range r.ToolCalls {
+			c.ToolCalls[i] = tc
+			if tc.Input != nil {
+				c.ToolCalls[i].Input = append([]byte(nil), tc.Input...)
+			}
+		}
+	}
+	return &c
 }
 
 // writeOptFloat hashes an optional float as a presence byte plus, when
