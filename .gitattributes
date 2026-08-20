@@ -1,0 +1,5 @@
+* text=auto eol=lf
+
+# Generated price table — keep it out of diffs by default; it is produced
+# by `go run ./pricing/gen`, not hand-edited.
+pricing/defaults_gen.go linguist-generated=true
