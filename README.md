@@ -219,7 +219,10 @@ vintage of whatever is loaded.
 - **Pure IO-bound code.** Parallelism is always network-bound.
   `errgroup` + `semaphore`, no worker pools.
 
-See [ROADMAP.md](./ROADMAP.md) for what is shipped and what is next.
+See [ROADMAP.md](./ROADMAP.md) for what is shipped and what is next,
+[CHANGELOG.md](./CHANGELOG.md) for what changed in each release, and
+[CONTRIBUTING.md](./CONTRIBUTING.md) for the commit, versioning and
+release rules.
 
 ## License
 
