@@ -15,6 +15,7 @@ Design doc and long-form context still live in the engine repo:
 | Phase 3a — tool use | Shipped |
 | Phase 3b — streaming | Deferred |
 | Phase 4 — independent release cadence (CI, release workflow, pkg.go.dev) | Shipped |
+| Phase 5 — System One (`Judge`, TypeSafe/Jev) | Shipped |
 
 Tool calling shipped: the adapter translates `Request.Tools` into
 provider tool declarations and maps tool calls back onto
@@ -22,6 +23,14 @@ provider tool declarations and maps tool calls back onto
 
 Streaming is still deferred — the interface types are declared and no
 provider implements them.
+
+System One shipped: `Judge` is a second interface for models that return
+typed judgments rather than text, with `Noul` / `Choice` / `Score`
+primitives, a TypeSafe transport under `judge/typesafe`, `retry.NewJudge`,
+hand-maintained pricing in `pricing/systemone.go`, and `MockJudge`. It is
+deliberately **not** a `Client` implementation — see the README section and
+the doc comment on `Judge` for why forcing it behind `Complete` would
+destroy the property it exists for.
 
 ## Deferred — pick up when a caller needs it
 
@@ -50,10 +59,6 @@ don't forget the shape of the work.
 
 ### Provider-specific features currently flagged but not wired
 
-- **Anthropic prompt caching** — `Config.EnablePromptCache` exists,
-  langchaingo's anthropic adapter doesn't expose `cache_control` yet.
-  Either upstream the feature to langchaingo or drop to raw HTTP for
-  this one call.
 - **OpenAI structured outputs** — `Request.ResponseFormat` could carry
   a JSON schema; langchaingo supports `response_format` but not
   `strict: true` yet.

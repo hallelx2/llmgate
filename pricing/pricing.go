@@ -79,7 +79,13 @@ func Lookup(model string) (Price, bool) {
 		}
 	}
 
-	return lookupIn(defaultPrices, model)
+	if p, ok := lookupIn(defaultPrices, model); ok {
+		return p, true
+	}
+
+	// System One models, hand-maintained because no upstream feed carries
+	// them. Last, so a feed or an override always wins. See systemone.go.
+	return lookupSystemOne(model)
 }
 
 // lookupIn resolves a model against one layer: exact match first so an
