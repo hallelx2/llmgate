@@ -26,7 +26,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -142,6 +144,9 @@ func New(cfg Config) (*Judge, error) {
 		base = DefaultBaseURL
 	}
 	base = strings.TrimRight(base, "/")
+	if err := checkBaseURL(base); err != nil {
+		return nil, err
+	}
 
 	model := cfg.Model
 	if model == "" {
@@ -167,6 +172,54 @@ func New(cfg Config) (*Judge, error) {
 		skipGuard:  cfg.SkipContextGuard,
 	}, nil
 }
+
+// checkBaseURL refuses a base URL that would put the API key on the wire in
+// cleartext.
+//
+// Every request carries `Authorization: Bearer <key>`, so a plain-http base
+// leaks a live credential to anything on the path. That is worth failing at
+// construction rather than trusting a caller to notice.
+//
+// Loopback is exempt: a test server and a local proxy are both http, and
+// neither leaves the machine.
+func checkBaseURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("typesafe: base URL %q is not a URL: %w", raw, err)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isLoopback(u.Hostname()) {
+			return nil
+		}
+		return fmt.Errorf(
+			"typesafe: base URL %q is plain http, which would send the API key in cleartext; use https (http is allowed for loopback only)",
+			raw)
+	default:
+		return fmt.Errorf("typesafe: base URL %q must be http or https, got scheme %q", raw, u.Scheme)
+	}
+}
+
+// isLoopback reports whether host addresses this machine.
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// maxResponseBytes caps how much of a response body is read.
+//
+// A judgment response is small — a few hundred bytes per answer. Reading
+// without a bound means a broken or hostile endpoint can stream until the
+// process dies, turning someone else's fault into an OOM here. 8 MiB is
+// orders of magnitude above any real response and still bounded.
+const maxResponseBytes = 8 << 20
 
 // wireRequest is the JSON body of an evaluation call.
 type wireRequest struct {
@@ -241,13 +294,24 @@ func (j *Judge) Judge(ctx context.Context, req llmgate.JudgeRequest) (*llmgate.J
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	// Bounded: one extra byte past the cap tells us it overflowed rather
+	// than merely reached the limit exactly.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, &llmgate.LLMError{
 			Class:    llmgate.ErrClassTransient,
 			Provider: llmgate.ProviderTypeSafe,
 			Message:  "read response body",
 			Cause:    err,
+		}
+	}
+	if len(raw) > maxResponseBytes {
+		return nil, &llmgate.LLMError{
+			Class:      llmgate.ErrClassGateway,
+			StatusCode: resp.StatusCode,
+			Provider:   llmgate.ProviderTypeSafe,
+			Message: fmt.Sprintf("response body exceeds %d bytes; a judgment response is never this large, so something else is answering",
+				maxResponseBytes),
 		}
 	}
 
@@ -341,21 +405,39 @@ func usageFor(wire wireResponse) llmgate.Usage {
 // degraded result a caller should quietly proceed on, since the code path
 // that consumes it will branch on a zero.
 func checkComplete(asked map[string]llmgate.Question, got map[string]llmgate.Answer) error {
-	var missing []string
-	for id := range asked {
-		if _, ok := got[id]; !ok {
-			missing = append(missing, id)
+	var problems []string
+
+	for id, q := range asked {
+		a, ok := got[id]
+		if !ok {
+			problems = append(problems, fmt.Sprintf("%q unanswered", id))
+			continue
+		}
+		// A Noul answered with a Choice is not a usable answer under a
+		// different name; it means the response does not correspond to the
+		// request. Caught here, the caller sees why — left alone, it
+		// surfaces as ErrAnswerType from an accessor much later.
+		if a.Kind() != q.Kind() {
+			problems = append(problems,
+				fmt.Sprintf("%q was asked as %s but answered as %s", id, q.Kind(), a.Kind()))
 		}
 	}
-	if len(missing) == 0 {
+
+	for id := range got {
+		if _, ok := asked[id]; !ok {
+			problems = append(problems, fmt.Sprintf("%q was not asked", id))
+		}
+	}
+
+	if len(problems) == 0 {
 		return nil
 	}
-	sort.Strings(missing)
+	sort.Strings(problems)
 	return &llmgate.LLMError{
 		Class:    llmgate.ErrClassGateway,
 		Provider: llmgate.ProviderTypeSafe,
-		Message: fmt.Sprintf("response answered %d of %d questions; missing: %s",
-			len(got), len(asked), strings.Join(missing, ", ")),
+		Message: fmt.Sprintf("response does not match the request (%d questions asked): %s",
+			len(asked), strings.Join(problems, "; ")),
 	}
 }
 

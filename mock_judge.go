@@ -140,6 +140,28 @@ func recordRequest(req JudgeRequest) JudgeRequest {
 // that actually sums to 1 so a caller's confidence and threshold logic runs
 // against realistic input rather than a degenerate all-zero map.
 func defaultAnswerFor(q Question) (Answer, error) {
+	// Pointer forms first. Validate accepts a non-nil *Noul (value
+	// receivers put the methods in the pointer's method set too), so the
+	// mock has to answer one rather than calling it an unknown kind — a
+	// request the real transport would send must not fail here.
+	switch v := q.(type) {
+	case *Noul:
+		if v == nil {
+			return nil, fmt.Errorf("question is a nil *Noul")
+		}
+		return defaultAnswerFor(*v)
+	case *Choice:
+		if v == nil {
+			return nil, fmt.Errorf("question is a nil *Choice")
+		}
+		return defaultAnswerFor(*v)
+	case *Score:
+		if v == nil {
+			return nil, fmt.Errorf("question is a nil *Score")
+		}
+		return defaultAnswerFor(*v)
+	}
+
 	switch v := q.(type) {
 	case Noul:
 		return NoulAnswer{Noul: 0.5}, nil
