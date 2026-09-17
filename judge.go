@@ -353,7 +353,7 @@ func (r JudgeRequest) Validate() error {
 	// on every run; map iteration order would make the error nondeterministic.
 	for _, id := range sortedKeys(r.Questions) {
 		q := r.Questions[id]
-		if q == nil {
+		if isNilQuestion(q) {
 			return fmt.Errorf("%w: question %q is nil", ErrQuestionInvalid, id)
 		}
 		if err := q.validate(); err != nil {
@@ -361,6 +361,29 @@ func (r JudgeRequest) Validate() error {
 		}
 	}
 	return nil
+}
+
+// isNilQuestion reports whether q carries no usable value.
+//
+// A plain q == nil misses the typed-nil case. The primitives declare their
+// methods on value receivers, which puts those methods in the method set of
+// the pointer type too, so a *Noul satisfies Question — and a nil one
+// passes an interface nil check, then panics when validate() dereferences
+// it. The interface is sealed, so the three pointer forms below are the
+// complete set that can reach here.
+func isNilQuestion(q Question) bool {
+	switch v := q.(type) {
+	case nil:
+		return true
+	case *Noul:
+		return v == nil
+	case *Choice:
+		return v == nil
+	case *Score:
+		return v == nil
+	default:
+		return false
+	}
 }
 
 // Judgment is the result of one Judge call.

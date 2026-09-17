@@ -182,9 +182,15 @@ type wireRequest struct {
 type wireResponse struct {
 	Model   string                     `json:"model"`
 	Answers map[string]json.RawMessage `json:"answers"`
-	Usage   struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+
+	// The counts are pointers so a genuine zero can be told apart from a
+	// field the provider omitted. Inferring presence from "is it positive"
+	// would mark an explicit {"input_tokens":0,"output_tokens":0} as
+	// unreported, which is the same conflation HAL-531 was about, just
+	// pointing the other way.
+	Usage struct {
+		InputTokens  *int `json:"input_tokens"`
+		OutputTokens *int `json:"output_tokens"`
 	} `json:"usage"`
 }
 
@@ -264,6 +270,9 @@ func (j *Judge) Judge(ctx context.Context, req llmgate.JudgeRequest) (*llmgate.J
 	if err != nil {
 		return nil, err
 	}
+	if err := checkComplete(req.Questions, answers); err != nil {
+		return nil, err
+	}
 
 	return &llmgate.Judgment{
 		// The model the server reports, not the one that was asked for. An
@@ -289,12 +298,17 @@ func (j *Judge) Judge(ctx context.Context, req llmgate.JudgeRequest) (*llmgate.J
 // the bug HAL-531 fixed. So Priced stays false whenever the counts did not
 // come from the provider, however well-known the model's rate is.
 func usageFor(wire wireResponse) llmgate.Usage {
-	reported := wire.Usage.InputTokens > 0 || wire.Usage.OutputTokens > 0
+	// Presence, not positivity: a provider that explicitly reports zero
+	// tokens has still reported.
+	reported := wire.Usage.InputTokens != nil || wire.Usage.OutputTokens != nil
+
+	in := derefOr(wire.Usage.InputTokens, 0)
+	out := derefOr(wire.Usage.OutputTokens, 0)
 
 	u := llmgate.Usage{
-		InputTokens:    wire.Usage.InputTokens,
-		OutputTokens:   wire.Usage.OutputTokens,
-		TotalTokens:    wire.Usage.InputTokens + wire.Usage.OutputTokens,
+		InputTokens:    in,
+		OutputTokens:   out,
+		TotalTokens:    in + out,
 		TokensReported: reported,
 	}
 
@@ -304,11 +318,53 @@ func usageFor(wire wireResponse) llmgate.Usage {
 
 	// Price against the model the server said answered, not the alias the
 	// request may have named: an alias resolves server-side and can move.
-	if cost, ok := pricing.ComputeWithOK(wire.Model, u.InputTokens, u.OutputTokens); ok {
+	// Jev has no prompt cache and no separate reasoning tier, so the
+	// breakdown is just input and output — but this goes through
+	// ComputeTokens rather than the deprecated two-int form, which bills a
+	// cached prompt as if it were uncached.
+	if cost, ok := pricing.ComputeTokens(wire.Model, pricing.Tokens{
+		Input:  u.InputTokens,
+		Output: u.OutputTokens,
+	}); ok {
 		u.CostUSD = cost
 		u.Priced = true
 	}
 	return u
+}
+
+// checkComplete verifies every question came back answered.
+//
+// A partial 200 is otherwise silent: the judgment looks fine, and the gap
+// only surfaces later as an ErrAnswerMissing from an accessor, a long way
+// from the response that caused it. Failing at the transport boundary puts
+// the error where the evidence is — and an unanswered question is not a
+// degraded result a caller should quietly proceed on, since the code path
+// that consumes it will branch on a zero.
+func checkComplete(asked map[string]llmgate.Question, got map[string]llmgate.Answer) error {
+	var missing []string
+	for id := range asked {
+		if _, ok := got[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	return &llmgate.LLMError{
+		Class:    llmgate.ErrClassGateway,
+		Provider: llmgate.ProviderTypeSafe,
+		Message: fmt.Sprintf("response answered %d of %d questions; missing: %s",
+			len(got), len(asked), strings.Join(missing, ", ")),
+	}
+}
+
+// derefOr returns *p, or fallback when p is nil.
+func derefOr[T any](p *T, fallback T) T {
+	if p == nil {
+		return fallback
+	}
+	return *p
 }
 
 // decodeAnswers turns the raw per-answer JSON into typed answers.
@@ -343,40 +399,75 @@ func decodeAnswer(raw json.RawMessage) (llmgate.Answer, error) {
 		return nil, fmt.Errorf("read answer type: %w", err)
 	}
 
+	// Required numeric fields are decoded through pointers so an omitted
+	// one is distinguishable from a real zero. This matters more here than
+	// almost anywhere else in the package: a missing "noul" silently
+	// becoming 0.0 does not look like an error downstream, it looks like a
+	// confident "definitely no", and it will drive a threshold accordingly.
 	switch probe.Type {
 	case llmgate.KindNoul:
 		var a struct {
-			Noul float64 `json:"noul"`
+			Noul *float64 `json:"noul"`
 		}
 		if err := json.Unmarshal(raw, &a); err != nil {
 			return nil, fmt.Errorf("decode noul: %w", err)
 		}
-		return llmgate.NoulAnswer{Noul: a.Noul}, nil
+		if a.Noul == nil {
+			return nil, fmt.Errorf("noul answer has no %q field", "noul")
+		}
+		if err := inUnitRange("noul", *a.Noul); err != nil {
+			return nil, err
+		}
+		return llmgate.NoulAnswer{Noul: *a.Noul}, nil
 
 	case llmgate.KindChoice:
 		var a struct {
-			Choice        string             `json:"choice"`
+			Choice        *string            `json:"choice"`
 			Probabilities map[string]float64 `json:"probabilities"`
-			Confidence    float64            `json:"confidence"`
+			Confidence    *float64           `json:"confidence"`
 		}
 		if err := json.Unmarshal(raw, &a); err != nil {
 			return nil, fmt.Errorf("decode choice: %w", err)
 		}
+		if a.Choice == nil || *a.Choice == "" {
+			return nil, fmt.Errorf("choice answer has no selected option")
+		}
+		if len(a.Probabilities) == 0 {
+			return nil, fmt.Errorf("choice answer has no probability distribution")
+		}
+		if a.Confidence == nil {
+			return nil, fmt.Errorf("choice answer has no confidence")
+		}
+		if err := inUnitRange("confidence", *a.Confidence); err != nil {
+			return nil, err
+		}
 		return llmgate.ChoiceAnswer{
-			Choice:        a.Choice,
+			Choice:        *a.Choice,
 			Probabilities: a.Probabilities,
-			Confidence:    a.Confidence,
+			Confidence:    *a.Confidence,
 		}, nil
 
 	case llmgate.KindScore:
 		var a struct {
-			Score         float64            `json:"score"`
+			Score         *float64           `json:"score"`
 			Legend        map[string]string  `json:"legend"`
 			Probabilities map[string]float64 `json:"probabilities"`
-			Confidence    float64            `json:"confidence"`
+			Confidence    *float64           `json:"confidence"`
 		}
 		if err := json.Unmarshal(raw, &a); err != nil {
 			return nil, fmt.Errorf("decode score: %w", err)
+		}
+		if a.Score == nil {
+			return nil, fmt.Errorf("score answer has no %q field", "score")
+		}
+		if len(a.Probabilities) == 0 {
+			return nil, fmt.Errorf("score answer has no probability distribution")
+		}
+		if a.Confidence == nil {
+			return nil, fmt.Errorf("score answer has no confidence")
+		}
+		if err := inUnitRange("confidence", *a.Confidence); err != nil {
+			return nil, err
 		}
 		legend, err := intKeyedStrings(a.Legend)
 		if err != nil {
@@ -387,10 +478,10 @@ func decodeAnswer(raw json.RawMessage) (llmgate.Answer, error) {
 			return nil, fmt.Errorf("decode score probabilities: %w", err)
 		}
 		return llmgate.ScoreAnswer{
-			Score:         a.Score,
+			Score:         *a.Score,
 			Legend:        legend,
 			Probabilities: probs,
-			Confidence:    a.Confidence,
+			Confidence:    *a.Confidence,
 		}, nil
 
 	case "":
@@ -402,6 +493,18 @@ func decodeAnswer(raw json.RawMessage) (llmgate.Answer, error) {
 		// the cause.
 		return nil, fmt.Errorf("unknown answer type %q", probe.Type)
 	}
+}
+
+// inUnitRange rejects a probability or confidence outside [0, 1].
+//
+// Out-of-range here means the body is not what it claims to be — a
+// mangling proxy, or a shape change — and passing it through would hand a
+// caller a "probability" of 7 to threshold against.
+func inUnitRange(field string, v float64) error {
+	if v < 0 || v > 1 {
+		return fmt.Errorf("%s is %v, outside [0,1]", field, v)
+	}
+	return nil
 }
 
 // intKeyedStrings converts a wire legend, whose keys are stringified level

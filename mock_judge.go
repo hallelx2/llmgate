@@ -72,7 +72,7 @@ func (m *MockJudge) Judge(ctx context.Context, req JudgeRequest) (*Judgment, err
 	atomic.AddInt32(&m.calls, 1)
 
 	m.mu.Lock()
-	m.requests = append(m.requests, req)
+	m.requests = append(m.requests, recordRequest(req))
 	m.mu.Unlock()
 
 	if !m.SkipValidation {
@@ -114,6 +114,26 @@ func (m *MockJudge) Judge(ctx context.Context, req JudgeRequest) (*Judgment, err
 			TokensReported: true,
 		},
 	}, nil
+}
+
+// recordRequest snapshots the question map so a later mutation by the
+// caller cannot rewrite history.
+//
+// Test code reuses request structs, and a recorded request that changes
+// after the call makes an assertion describe the wrong moment — the kind of
+// failure that reads as a flake. The questions themselves are value types,
+// so copying the map is enough to pin what was asked; State is left as the
+// caller's reference, since a mock cannot deep-copy an arbitrary any.
+func recordRequest(req JudgeRequest) JudgeRequest {
+	if req.Questions == nil {
+		return req
+	}
+	qs := make(map[string]Question, len(req.Questions))
+	for id, q := range req.Questions {
+		qs[id] = q
+	}
+	req.Questions = qs
+	return req
 }
 
 // defaultAnswerFor builds a well-formed answer for q, with a distribution

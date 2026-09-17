@@ -119,7 +119,16 @@ func TestDecodesAllThreePrimitives(t *testing.T) {
 			"frustration":{"type":"score","score":1.6,"legend":{"0":"Calm","1":"Frustrated","2":"Very angry"},"probabilities":{"0":0.05,"1":0.3,"2":0.65},"confidence":0.78}}`)
 	})
 
-	got, err := j.Judge(context.Background(), batch())
+	got, err := j.Judge(context.Background(), llmgate.JudgeRequest{
+		State: "a ticket",
+		Questions: map[string]llmgate.Question{
+			"urgent": llmgate.Noul{Instructions: "urgent?"},
+			"team": llmgate.Choice{Instructions: "which team?", Options: llmgate.ChoiceOptions{
+				{Name: "billing"}, {Name: "technical"}, {Name: "sales"},
+			}},
+			"frustration": llmgate.Score{Instructions: "how frustrated?", Levels: []string{"Calm", "Frustrated", "Very angry"}},
+		},
+	})
 	if err != nil {
 		t.Fatalf("Judge: %v", err)
 	}

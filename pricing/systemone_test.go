@@ -35,18 +35,18 @@ func TestJevAliasesPrice(t *testing.T) {
 // cost column in any benchmark is decoration.
 func TestJevCostForAKnownTokenCount(t *testing.T) {
 	// 1,000,000 input tokens at $0.042/Mtok is exactly $0.042.
-	got, ok := ComputeWithOK("jev-1.13.0", 1_000_000, 0)
+	got, ok := ComputeTokens("jev-1.13.0", Tokens{Input: 1_000_000})
 	if !ok {
-		t.Fatal("ComputeWithOK reported the model as unpriced")
+		t.Fatal("ComputeTokens reported the model as unpriced")
 	}
 	if math.Abs(got-0.042) > 1e-9 {
 		t.Errorf("cost for 1M input tokens = %v, want 0.042", got)
 	}
 
 	// Output is free, so adding output tokens must not change the bill.
-	withOutput, ok := ComputeWithOK("jev-1.13.0", 1_000_000, 500_000)
+	withOutput, ok := ComputeTokens("jev-1.13.0", Tokens{Input: 1_000_000, Output: 500_000})
 	if !ok {
-		t.Fatal("ComputeWithOK reported the model as unpriced")
+		t.Fatal("ComputeTokens reported the model as unpriced")
 	}
 	if math.Abs(withOutput-got) > 1e-9 {
 		t.Errorf("cost changed when output tokens were added (%v vs %v); output is free", withOutput, got)
@@ -57,10 +57,10 @@ func TestJevCostForAKnownTokenCount(t *testing.T) {
 // real price, and must stay distinguishable from a model that has no entry
 // at all. Both compute $0 for zero tokens — only the ok flag separates them.
 func TestFreeOutputIsNotTheSameAsUnpriced(t *testing.T) {
-	if _, ok := ComputeWithOK("jev-1.13.0", 0, 1000); !ok {
+	if _, ok := ComputeTokens("jev-1.13.0", Tokens{Output: 1000}); !ok {
 		t.Error("a free-output model reported as unpriced; the zero rate is real, not missing")
 	}
-	if _, ok := ComputeWithOK("definitely-not-a-model-xyz", 0, 1000); ok {
+	if _, ok := ComputeTokens("definitely-not-a-model-xyz", Tokens{Output: 1000}); ok {
 		t.Error("an unknown model reported as priced")
 	}
 }
