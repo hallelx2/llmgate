@@ -129,6 +129,114 @@ func main() {
 }
 ```
 
+## System One: judgments instead of text
+
+Some work does not need language. Routing a ticket, ranking a candidate,
+checking whether a claim holds — the output is a decision, and wrapping
+it in prose only to parse the prose back out is pure overhead.
+
+`Judge` is a second interface for models that return that decision
+directly. It sits **beside** `Client`, not behind it: a chat-completion
+surface has roles, messages and an assistant turn, and a System One model
+has none of those. Hold a `Client` for work that must produce language, a
+`Judge` for work that must produce a decision, and both when you need
+both.
+
+The first implementation is [TypeSafe](https://docs.typesafe.ai)'s **Jev**.
+
+```go
+j, _ := typesafe.New(typesafe.Config{}) // reads TYPESAFE_API_KEY
+judge := retry.NewJudge(retry.Config{MaxRetries: 3})(j)
+
+result, err := judge.Judge(ctx, llmgate.JudgeRequest{
+    Model: "jev-1.13.0",
+    State: map[string]any{"ticket": ticket},
+    Questions: map[string]llmgate.Question{
+        "is_urgent":    llmgate.Noul{Instructions: "Is this time-sensitive?"},
+        "wants_refund": llmgate.Noul{Instructions: "Is the customer asking for money back?"},
+        "team": llmgate.Choice{
+            Instructions: "Which team should own this?",
+            Options: llmgate.ChoiceOptions{
+                {Name: "billing", Description: "Payments, invoicing, refunds"},
+                {Name: "technical", Description: "Bugs, outages, integrations"},
+                {Name: "unclear", Description: "Not enough information to route"},
+            },
+        },
+        "frustration": llmgate.Score{
+            Instructions: "How frustrated does the customer sound?",
+            Levels:       []string{"Neutral", "Annoyed", "Angry", "Threatening to leave"},
+        },
+    },
+})
+
+urgent, _ := result.Noul("is_urgent")      // 0.92
+team, _ := result.Choice("team")           // .Choice, .Probabilities, .Confidence
+mood, _ := result.Score("frustration")     // .Score, .Legend, .Probabilities, .Confidence
+```
+
+Runnable version: [`examples/judge`](./examples/judge).
+
+### One request, many questions
+
+That example is **one** HTTP call, not four. The model reads the state
+once and runs every question against it in parallel, so packing a batch is
+the whole point — the instinct to fan out into a call per question is the
+thing to unlearn. Questions in one request cannot see each other's
+answers, which is exactly what makes them parallelisable; send a second
+request only when an answer decides what evidence to fetch next.
+
+Two limits bound a batch: **64k tokens** for the state plus all questions,
+and **32k** for the state plus the single longest question. The transport
+checks both before sending, so an oversized batch costs nothing.
+
+### Three primitives
+
+| | Returns | Reach for it when |
+|---|---|---|
+| `Noul` | probability of yes | A condition either holds or it doesn't. Use one per label when several can apply at once |
+| `Choice` | one option + the full distribution + confidence | Exactly one outcome wins |
+| `Score` | probability-weighted position + distribution + confidence | The answer is a degree along an ordered rubric |
+
+`Noul` carries **no confidence**, and that is not an omission — the
+probability is the answer. A Noul near 0.5 means yes and no are about
+equally likely; it does *not* mean "medium intensity".
+
+`Confidence` on the other two summarises how concentrated the
+distribution is. It is not a probability that the answer is correct, and
+it is not permission to act. Several equally acceptable options also
+spread probability, so low confidence on a harmless choice is not a
+problem to route around.
+
+### What it is bad at
+
+TypeSafe publishes a [jaggedness page](https://docs.typesafe.ai/model-jaggedness/jev-1.13)
+for Jev. The three that will bite hardest:
+
+- **It is not a calculator.** Counting, arithmetic, and date ordering are
+  all unreliable — it reads dates as text, not as ordered quantities.
+  Keep every one of those in code. Extraction is a judgment; comparison
+  is not.
+- **It reads literally.** It answers the question you wrote, not the one
+  you meant. Keep `Instructions` and the criteria aligned — a `Noul`
+  whose `true` describes the "no" case measurably underperforms. When you
+  find yourself explaining what you really meant, that explanation is the
+  missing half of the instruction.
+- **Context rot.** Accuracy falls as the state grows with material
+  unrelated to the decision. Filter first, and send only the fields the
+  questions need.
+
+It also does not generate text. When the answer space is bounded, turn
+extraction into a `Choice` over candidates your code found, rather than
+asking for the value itself.
+
+### Cost
+
+Jev bills input tokens only; **output is free**. Rates live in
+`pricing/systemone.go` — hand-maintained, because the upstream price feeds
+only index chat-completion models and a generated entry would be wiped by
+the next `go generate`. It is consulted last, so a feed or an explicit
+`pricing.Register` still wins.
+
 ## Cost accounting
 
 Every `Response` carries a `Usage` with the token breakdown split by
@@ -208,6 +316,13 @@ vintage of whatever is loaded.
 - **The interface is tiny.** `Complete`, `CountTokens`, later
   `Stream`, later `Capabilities`. If it doesn't fit, it goes in a
   middleware, not the interface.
+- **A second interface beats a leaky first one.** `Judge` exists because
+  a System One model has no messages and no assistant turn. Forcing it
+  through `Complete` would mean encoding questions into a prompt and
+  parsing answers back out of text — reintroducing exactly the JSON-mode
+  retry machinery that a typed API removes. When a model's shape genuinely
+  differs, add a seam; do not widen the existing one until it fits
+  everything and describes nothing.
 - **Middleware over inheritance.** Retries, caching, cost tracking,
   rate-limiting — all `func(Client) Client` wrappers. Compose them.
 - **No magic config.** No viper, no auto-reload, no remote backends.
