@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 )
 
 // Judge is the contract for a System One model: one that reads application
@@ -522,14 +521,4 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-// levelIndex parses a wire level key, which arrives as a stringified
-// integer ("0", "1", ...) in both the legend and the distribution.
-func levelIndex(key string) (int, error) {
-	i, err := strconv.Atoi(key)
-	if err != nil {
-		return 0, fmt.Errorf("llmgate: score level key %q is not an integer: %w", key, err)
-	}
-	return i, nil
 }

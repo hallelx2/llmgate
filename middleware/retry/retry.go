@@ -37,6 +37,15 @@ type Config struct {
 // New returns a Middleware that retries Complete on transient errors
 // with exponential backoff + jitter.
 func New(cfg Config) llmgate.Middleware {
+	cfg = withDefaults(cfg)
+	return func(inner llmgate.Client) llmgate.Client {
+		return &retryClient{inner: inner, cfg: cfg}
+	}
+}
+
+// withDefaults fills the zero values. Shared by New and NewJudge so the
+// two seams cannot drift apart on what an unset MaxRetries means.
+func withDefaults(cfg Config) Config {
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = 3
 	}
@@ -49,9 +58,7 @@ func New(cfg Config) llmgate.Middleware {
 	if cfg.RetryIf == nil {
 		cfg.RetryIf = defaultRetryIf
 	}
-	return func(inner llmgate.Client) llmgate.Client {
-		return &retryClient{inner: inner, cfg: cfg}
-	}
+	return cfg
 }
 
 type retryClient struct {

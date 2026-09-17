@@ -317,15 +317,6 @@ func TestAnswerKinds(t *testing.T) {
 	}
 }
 
-func TestLevelIndexParsesWireKeys(t *testing.T) {
-	if got, err := levelIndex("2"); err != nil || got != 2 {
-		t.Errorf("levelIndex(\"2\") = %d, %v; want 2, nil", got, err)
-	}
-	if _, err := levelIndex("two"); err == nil {
-		t.Error("levelIndex(\"two\") = nil error, want a parse failure")
-	}
-}
-
 func mustMarshal(t *testing.T, v any) string {
 	t.Helper()
 	b, err := json.Marshal(v)
