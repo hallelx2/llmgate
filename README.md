@@ -176,6 +176,18 @@ mood, _ := result.Score("frustration")     // .Score, .Legend, .Probabilities, .
 
 Runnable version: [`examples/judge`](./examples/judge).
 
+Live tests sit behind a build tag so a plain `go test ./...` stays offline
+and free:
+
+```bash
+# key from the environment, or from a gitignored .env up-tree
+go test -tags live -v -run TestLive ./judge/typesafe/
+```
+
+`TestLiveLatencyScaling` is the one worth re-running when the model version
+moves — it measures whether a batch of N questions still costs roughly what
+one costs.
+
 ### One request, many questions
 
 That example is **one** HTTP call, not four. The model reads the state
