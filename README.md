@@ -32,7 +32,10 @@ implementations — one adapter serves all three providers.
 Order matters. The outermost wrapper sees the call first; the innermost
 hits the network. Put `cache.New` below `budget.New` so cache hits
 don't burn budget. Put `retry.New` on top so retries run regardless
-of which inner layer tripped.
+of which inner layer tripped. Put `limit.Client` (or `limit.Judge`)
+just inside `retry`, so each attempt takes a slot and the 429 that
+triggers a retry has already narrowed the limit before the retry
+sleeps.
 
 ![request flow](./docs/request-flow.svg)
 
@@ -65,6 +68,7 @@ underneath. Roadmap lives in [ROADMAP.md](./ROADMAP.md).
 - Anthropic, OpenAI, Gemini — all backed by `langchaingo/llms`, in the `provider/` subpackages
 - A single internal adapter; add a provider = add a ~30-line file
 - `retry.New` middleware for exp-backoff on transient errors
+- `limit.New` — an adaptive per-provider concurrency limiter (halves on a 429 or transport failure, honours `Retry-After`, widens on sustained success); wraps `Client` and `Judge`, and reports every change through `OnChange`
 - Cost tracking via a static `pricing` table + `Usage.CostUSD` on every Response
 - Capability flags (`MaxContext`, `SupportsJSONMode`, `SupportsStreaming`, `SupportsTools`, `SupportsVision`) with a `capabilities.Capable` interface
 - `router.New` with per-provider fallback (`router.OnRateLimit`, `router.OnTransient`, or a custom `router.FallbackPolicy`)
