@@ -27,6 +27,9 @@ var systemOnePrices = map[string]Price{
 	"jev-1.13.0":  {InputPerMTok: 0.042, OutputPerMTok: 0},
 	"jev-latest":  {InputPerMTok: 0.042, OutputPerMTok: 0},
 	"jev-preview": {InputPerMTok: 0.042, OutputPerMTok: 0},
+	// The same model as Vercel AI Gateway names it; the gateway adds no
+	// markup (vercel.com/ai-gateway/models/jev, read 2026-09-20).
+	"typesafe-ai/jev": {InputPerMTok: 0.042, OutputPerMTok: 0},
 }
 
 // lookupSystemOne resolves a model against the hand-maintained table.
