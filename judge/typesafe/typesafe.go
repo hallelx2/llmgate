@@ -59,6 +59,14 @@ const (
 	// empty.
 	EnvAPIKey = "TYPESAFE_API_KEY"
 
+	// EnvBaseURL and EnvModel are read when Config.BaseURL / Config.Model
+	// are empty — the same names TypeSafe's own SDKs honour, and what a
+	// gateway that speaks the TypeSafe shape asks you to set (Vercel AI
+	// Gateway: TYPESAFE_BASE_URL=https://ai-gateway.vercel.sh/typesafe,
+	// model typesafe-ai/jev, an AI Gateway key as the API key).
+	EnvBaseURL = "TYPESAFE_BASE_URL"
+	EnvModel   = "TYPESAFE_MODEL"
+
 	// evaluatePath is the System One evaluation endpoint.
 	evaluatePath = "/v1/systemone"
 )
@@ -134,6 +142,12 @@ func New(cfg Config) (*Judge, error) {
 	key := cfg.APIKey
 	if key == "" {
 		key = os.Getenv(EnvAPIKey)
+	}
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = os.Getenv(EnvBaseURL)
+	}
+	if cfg.Model == "" {
+		cfg.Model = os.Getenv(EnvModel)
 	}
 	if key == "" {
 		return nil, fmt.Errorf("typesafe: no API key: set Config.APIKey or %s", EnvAPIKey)
