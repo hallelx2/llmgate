@@ -28,11 +28,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkoukk/tiktoken-go"
@@ -110,6 +112,47 @@ type Config struct {
 	// approximate guard, and it is better to lose the warning than to lose
 	// the call.
 	SkipContextGuard bool
+
+	// OnRequest, when set, is called once per Judge call — success or
+	// failure — with where the time went. It runs on the calling
+	// goroutine after the call completes, so it must be cheap and must
+	// not block.
+	//
+	// It exists because a round-trip number alone cannot tell local CPU
+	// from provider latency: the 2026-09-25 query evaluation measured
+	// 28.6 s against a predicted ~9 s, and the difference was the guard
+	// rebuilding its tokenizer on every count (HAL-1708), inside the
+	// concurrency limiter where it looked like the provider being slow.
+	OnRequest func(RequestTrace)
+}
+
+// RequestTrace is where one Judge call's time went.
+type RequestTrace struct {
+	Model      string
+	Questions  int
+	StateBytes int // the marshalled state
+	BodyBytes  int // the whole request body
+
+	// Prepare covers validation, marshalling and the context guard —
+	// everything local before the request goes on the wire.
+	Prepare time.Duration
+	// GuardCounted is true when the guard ran the tokenizer, false when
+	// the byte bound proved the request fits (or the guard was skipped).
+	GuardCounted bool
+
+	// Connect is DNS + TCP + TLS for a new connection; zero when an idle
+	// connection (or an HTTP/2 stream on one) was reused.
+	Connect    time.Duration
+	ConnReused bool
+	// FirstByte runs from the request going out to the first response
+	// byte: the provider's own time plus one network round trip.
+	FirstByte time.Duration
+	// Total is the whole call, Prepare included.
+	Total time.Duration
+
+	StatusCode  int
+	InputTokens int
+	Err         error
 }
 
 // Judge is a System One client implementing llmgate.Judge.
@@ -119,7 +162,14 @@ type Judge struct {
 	model      string
 	httpClient *http.Client
 	countFn    func(string) (int, error)
-	skipGuard  bool
+	// byteBound is true when countFn is the built-in estimator, whose
+	// tokens each cover at least one byte — so a byte count is a proven
+	// upper bound on the token count and the guard can skip counting
+	// whenever bytes alone fit. A caller-supplied counter makes no such
+	// promise, so it is always consulted.
+	byteBound bool
+	skipGuard bool
+	onRequest func(RequestTrace)
 }
 
 // Compile-time check that the transport satisfies the seam.
@@ -159,8 +209,10 @@ func New(cfg Config) (*Judge, error) {
 	}
 
 	countFn := cfg.CountTokens
+	byteBound := false
 	if countFn == nil {
 		countFn = EstimateTokens
+		byteBound = true
 	}
 
 	return &Judge{
@@ -169,7 +221,9 @@ func New(cfg Config) (*Judge, error) {
 		model:      model,
 		httpClient: httpClient,
 		countFn:    countFn,
+		byteBound:  byteBound,
 		skipGuard:  cfg.SkipContextGuard,
+		onRequest:  cfg.OnRequest,
 	}, nil
 }
 
@@ -248,7 +302,20 @@ type wireResponse struct {
 }
 
 // Judge evaluates req.State against every question in one HTTP request.
-func (j *Judge) Judge(ctx context.Context, req llmgate.JudgeRequest) (*llmgate.Judgment, error) {
+func (j *Judge) Judge(ctx context.Context, req llmgate.JudgeRequest) (res *llmgate.Judgment, err error) {
+	start := time.Now()
+	tr := RequestTrace{Questions: len(req.Questions)}
+	if j.onRequest != nil {
+		defer func() {
+			tr.Total = time.Since(start)
+			tr.Err = err
+			if res != nil {
+				tr.InputTokens = res.Usage.InputTokens
+			}
+			j.onRequest(tr)
+		}()
+	}
+
 	if err := req.Validate(); err != nil {
 		return nil, err
 	}
@@ -257,23 +324,81 @@ func (j *Judge) Judge(ctx context.Context, req llmgate.JudgeRequest) (*llmgate.J
 	if model == "" {
 		model = j.model
 	}
+	tr.Model = model
+
+	// The state is marshalled once: the body embeds it verbatim and the
+	// guard measures it, rather than each serialising it separately.
+	stateJSON, err := json.Marshal(req.State)
+	if err != nil {
+		return nil, fmt.Errorf("typesafe: marshal request: %w", err)
+	}
+	tr.StateBytes = len(stateJSON)
 
 	body, err := json.Marshal(wireRequest{
-		State:     req.State,
+		State:     json.RawMessage(stateJSON),
 		Model:     model,
 		Questions: req.Questions,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("typesafe: marshal request: %w", err)
 	}
+	tr.BodyBytes = len(body)
 
 	if !j.skipGuard {
-		if err := j.checkContextBudget(req); err != nil {
+		counted, err := j.checkContextBudget(stateJSON, req.Questions)
+		tr.GuardCounted = counted
+		if err != nil {
 			return nil, err
 		}
 	}
+	tr.Prepare = time.Since(start)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, j.baseURL+evaluatePath, bytes.NewReader(body))
+	// The transport calls these hooks on its own goroutines, and can still
+	// be running one when Do returns with an error; the timings are held
+	// under a lock and copied into the trace when the call ends.
+	var (
+		wireMu    sync.Mutex
+		connStart time.Time
+		sent      time.Time
+		connect   time.Duration
+		reused    bool
+		firstByte time.Duration
+	)
+	if j.onRequest != nil {
+		defer func() {
+			wireMu.Lock()
+			tr.Connect, tr.ConnReused, tr.FirstByte = connect, reused, firstByte
+			wireMu.Unlock()
+		}()
+	}
+	trace := &httptrace.ClientTrace{
+		GetConn: func(string) {
+			wireMu.Lock()
+			connStart = time.Now()
+			wireMu.Unlock()
+		},
+		GotConn: func(info httptrace.GotConnInfo) {
+			wireMu.Lock()
+			reused = info.Reused
+			if !info.Reused && !connStart.IsZero() {
+				connect = time.Since(connStart)
+			}
+			wireMu.Unlock()
+		},
+		WroteRequest: func(httptrace.WroteRequestInfo) {
+			wireMu.Lock()
+			sent = time.Now()
+			wireMu.Unlock()
+		},
+		GotFirstResponseByte: func() {
+			wireMu.Lock()
+			if !sent.IsZero() {
+				firstByte = time.Since(sent)
+			}
+			wireMu.Unlock()
+		},
+	}
+	httpReq, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodPost, j.baseURL+evaluatePath, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("typesafe: build request: %w", err)
 	}
@@ -293,6 +418,7 @@ func (j *Judge) Judge(ctx context.Context, req llmgate.JudgeRequest) (*llmgate.J
 		}
 	}
 	defer resp.Body.Close()
+	tr.StatusCode = resp.StatusCode
 
 	// Bounded: one extra byte past the cap tells us it overflowed rather
 	// than merely reached the limit exactly.
@@ -711,6 +837,7 @@ func retryAfter(h http.Header) time.Duration {
 }
 
 // checkContextBudget rejects a request that cannot fit, before it is sent.
+// counted reports whether the tokenizer ran.
 //
 // Two limits, because the model reads the state once and then runs every
 // question against it: a total budget, and a per-question budget the
@@ -720,30 +847,52 @@ func retryAfter(h http.Header) time.Duration {
 // uses cl100k_base. It is deliberately a guard and not an authority: the
 // server rules on the real thing, and Config.SkipContextGuard exists for
 // the case where an approximation rejects something the API would accept.
-func (j *Judge) checkContextBudget(req llmgate.JudgeRequest) error {
-	stateJSON, err := json.Marshal(req.State)
-	if err != nil {
-		return fmt.Errorf("typesafe: marshal state for budget check: %w", err)
+//
+// It is also on every request's critical path, so it does the least work
+// that can decide. With the built-in estimator every token covers at least
+// one byte, so byte lengths are an upper bound on token counts: when the
+// bytes fit, the tokens fit, and nothing is tokenised. Past that, the state
+// is counted exactly once and each question is still bounded by its bytes;
+// questions are tokenised only if the bound is not enough to decide.
+func (j *Judge) checkContextBudget(stateJSON []byte, questions map[string]llmgate.Question) (counted bool, err error) {
+	ids := sortedQuestionIDs(questions)
+	qJSON := make([][]byte, len(ids))
+	qBytes, longestBytes := 0, 0
+	for i, id := range ids {
+		b, err := json.Marshal(questions[id])
+		if err != nil {
+			return false, fmt.Errorf("typesafe: marshal question %q for budget check: %w", id, err)
+		}
+		qJSON[i] = b
+		qBytes += len(b)
+		longestBytes = max(longestBytes, len(b))
 	}
+
+	if j.byteBound {
+		if len(stateJSON)+qBytes <= MaxTotalTokens && len(stateJSON)+longestBytes <= MaxStateAndQuestionTokens {
+			return false, nil
+		}
+	}
+
 	stateTokens, err := j.countFn(string(stateJSON))
 	if err != nil {
 		// A broken estimator must not block a request that may well be
 		// fine. Skip the guard and let the server decide.
-		return nil
+		return true, nil
+	}
+	if j.byteBound {
+		if stateTokens+qBytes <= MaxTotalTokens && stateTokens+longestBytes <= MaxStateAndQuestionTokens {
+			return true, nil
+		}
 	}
 
 	total := stateTokens
 	longest := 0
 	longestID := ""
-
-	for _, id := range sortedQuestionIDs(req.Questions) {
-		qJSON, err := json.Marshal(req.Questions[id])
+	for i, id := range ids {
+		n, err := j.countFn(string(qJSON[i]))
 		if err != nil {
-			return fmt.Errorf("typesafe: marshal question %q for budget check: %w", id, err)
-		}
-		n, err := j.countFn(string(qJSON))
-		if err != nil {
-			return nil
+			return true, nil
 		}
 		total += n
 		if n > longest {
@@ -752,17 +901,17 @@ func (j *Judge) checkContextBudget(req llmgate.JudgeRequest) error {
 	}
 
 	if total > MaxTotalTokens {
-		return &llmgate.LLMError{
+		return true, &llmgate.LLMError{
 			Class:    llmgate.ErrClassContextLength,
 			Provider: llmgate.ProviderTypeSafe,
 			Message: fmt.Sprintf(
 				"state plus %d questions is about %d tokens, over the %d limit — send fewer questions per call, or trim the state",
-				len(req.Questions), total, MaxTotalTokens),
+				len(questions), total, MaxTotalTokens),
 		}
 	}
 
 	if stateTokens+longest > MaxStateAndQuestionTokens {
-		return &llmgate.LLMError{
+		return true, &llmgate.LLMError{
 			Class:    llmgate.ErrClassContextLength,
 			Provider: llmgate.ProviderTypeSafe,
 			Message: fmt.Sprintf(
@@ -770,7 +919,7 @@ func (j *Judge) checkContextBudget(req llmgate.JudgeRequest) error {
 				longestID, stateTokens+longest, MaxStateAndQuestionTokens),
 		}
 	}
-	return nil
+	return true, nil
 }
 
 // sortedQuestionIDs keeps budget accounting and its error messages
@@ -791,12 +940,124 @@ func sortedQuestionIDs(q map[string]llmgate.Question) []string {
 // neighbourhood rather than exact. It exists to catch a request that is
 // obviously too large before it costs a round-trip, not to predict the
 // bill.
+//
+// The encoder is built once per process. tiktoken-go caches the rank
+// table but builds a fresh BPE — a 100k-entry map and a regex compile —
+// on every GetEncoding, which measured 256 ms per call; the guard used to
+// pay that once per question (HAL-1708).
+//
+// Past that, encoding itself is the cost: tiktoken-go's pre-tokenizer is a
+// backtracking regex, about 4 µs a byte, so a 16-page request state took
+// 290 ms to count — on every request, inside the concurrency limiter's
+// slot. Long text is therefore cut into pieces and counted in parallel.
+// The count is exact, not approximate: see splitForCount.
 func EstimateTokens(text string) (int, error) {
+	enc, err := cl100k()
+	if err != nil {
+		return 0, err
+	}
+	chunks := splitForCount(text, parallelCountBytes)
+	if len(chunks) == 1 {
+		return len(enc.Encode(text, nil, nil)), nil
+	}
+	counts := make([]int, len(chunks))
+	var wg sync.WaitGroup
+	for i, c := range chunks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			counts[i] = len(enc.Encode(c, nil, nil))
+		}()
+	}
+	wg.Wait()
+	n := 0
+	for _, c := range counts {
+		n += c
+	}
+	return n, nil
+}
+
+// parallelCountBytes is the chunk size above which counting fans out.
+// Below it a goroutine costs more than it saves.
+const parallelCountBytes = 8 << 10
+
+// splitForCount cuts text into chunks of roughly size bytes, only at
+// positions where the count of the parts provably equals the count of the
+// whole.
+//
+// cl100k's BPE never merges across a pre-tokenizer piece, so a cut that
+// falls on a piece boundary changes nothing. One such boundary is easy to
+// recognise without running the regex: a single space, preceded by a
+// non-space and followed by a letter. The pattern gives that space to the
+// word after it (` ?\p{L}+`), and the piece before it ends at the
+// non-space; no alternative in the pattern spans a lone space between a
+// non-space and a letter. Cutting just before the space keeps " word"
+// whole in the next chunk.
+//
+// Text with no such position — a single enormous token-dense run — comes
+// back as one chunk and is counted serially, which is merely slower.
+func splitForCount(text string, size int) []string {
+	if len(text) <= size {
+		return []string{text}
+	}
+	var out []string
+	for len(text) > size {
+		cut := -1
+		for i := size; i < len(text)-1 && i < size*2; i++ {
+			if text[i] == ' ' && !isSpaceByte(text[i-1]) && isASCIILetter(text[i+1]) {
+				cut = i
+				break
+			}
+		}
+		if cut < 0 {
+			break
+		}
+		out = append(out, text[:cut])
+		text = text[cut:]
+	}
+	return append(out, text)
+}
+
+func isSpaceByte(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\v' || b == '\f'
+}
+
+func isASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+var cl100k = sync.OnceValues(func() (*tiktoken.Tiktoken, error) {
 	enc, err := tiktoken.GetEncoding("cl100k_base")
 	if err != nil {
-		return 0, fmt.Errorf("typesafe: load tokenizer: %w", err)
+		return nil, fmt.Errorf("typesafe: load tokenizer: %w", err)
 	}
-	return len(enc.Encode(text, nil, nil)), nil
+	return enc, nil
+})
+
+// Warm opens a connection to the API ahead of the first judgment, so the
+// first real call does not pay DNS, TCP and TLS on the critical path, and
+// builds the guard's tokenizer so the first oversized request does not pay
+// for that either.
+//
+// It sends an unauthenticated GET to the API root; the status is ignored —
+// any response means a connection now sits in the pool. HTTP/2 multiplexes
+// later calls onto it. Call it at startup or when a session begins; it is
+// never required.
+func (j *Judge) Warm(ctx context.Context) error {
+	if j.byteBound && !j.skipGuard {
+		go cl100k() // an error resurfaces on first use
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, j.baseURL+"/", nil)
+	if err != nil {
+		return fmt.Errorf("typesafe: warm: %w", err)
+	}
+	resp, err := j.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("typesafe: warm: %w", err)
+	}
+	// Drained so the connection returns to the pool.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	return resp.Body.Close()
 }
 
 // truncate shortens s to at most n characters, marking that it was cut.
