@@ -14,12 +14,18 @@ Design doc and long-form context still live in the engine repo:
 | Phase 2 — router / cost / capabilities / middleware (retry, budget, cache) | Shipped |
 | Phase 3a — tool use | Shipped |
 | Phase 3b — streaming | Deferred |
+| Phase 3c — prompt caching | Shipped |
 | Phase 4 — independent release cadence (CI, release workflow, pkg.go.dev) | Shipped |
 | Phase 5 — System One (`Judge`, TypeSafe/Jev) | Shipped |
 
 Tool calling shipped: the adapter translates `Request.Tools` into
 provider tool declarations and maps tool calls back onto
 `Response.ToolCalls`, across all three providers.
+
+Prompt caching shipped: `Message.CacheBreakpoint` marks the end of a
+cacheable prefix and `Config.EnablePromptCache` is shorthand for caching
+the first user message. Measured on a 120k prompt with a 100k stable
+prefix: glm-4.6 -66%, claude-sonnet-4-5 -73%, gpt-4o -44% per warm hop.
 
 Streaming is still deferred — the interface types are declared and no
 provider implements them.
@@ -75,5 +81,6 @@ don't forget the shape of the work.
   when a caller relies on the flags for routing.
 - Pricing table drift — addressed by `pricing.UseRemote`, which layers
   a refreshed snapshot from LiteLLM or OpenRouter over the embedded
-  table. Still open: a scheduled job to regenerate the embedded
-  defaults so the offline path does not age either.
+  table, and by `pricing/gen`, which regenerates the embedded defaults
+  from the live feed. Still open: running that generator on a
+  schedule, so the offline path does not age between manual runs.

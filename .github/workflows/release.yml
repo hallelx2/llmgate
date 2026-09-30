@@ -32,6 +32,18 @@ jobs:
           fi
           echo "tag $tag accepted"
 
+      - name: Verify the tag has a CHANGELOG entry
+        # A release with no changelog section ships undocumented, and a Go
+        # module tag cannot be moved once the proxy has served it. A grep is
+        # enough to make that unrecoverable mistake impossible.
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! grep -q "^## \[${version}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [${version}]' section"
+            exit 1
+          fi
+          echo "changelog entry for ${version} found"
+
       - name: Verify tidy
         run: |
           go mod tidy
