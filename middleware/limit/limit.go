@@ -257,6 +257,8 @@ type limitedClient struct {
 	l     *Limiter
 }
 
+// Complete waits for a slot from the limiter, then forwards the request,
+// feeding the outcome back so the limit adapts.
 func (c *limitedClient) Complete(ctx context.Context, req llmgate.Request) (*llmgate.Response, error) {
 	release, err := c.l.Acquire(ctx)
 	if err != nil {
@@ -287,6 +289,8 @@ type limitedJudge struct {
 	l     *Limiter
 }
 
+// Judge waits for a slot from the limiter, then forwards the batch,
+// feeding the outcome back so the limit adapts.
 func (j *limitedJudge) Judge(ctx context.Context, req llmgate.JudgeRequest) (*llmgate.Judgment, error) {
 	release, err := j.l.Acquire(ctx)
 	if err != nil {

@@ -86,9 +86,10 @@ func TestLimiterConvergesOnTheProvidersCapacityAndLosesNothing(t *testing.T) {
 	defer emu.Unlock()
 	var dec, inc int
 	for _, e := range events {
-		if e.Cause == "rate_limited" {
+		switch e.Cause {
+		case "rate_limited":
 			dec++
-		} else if e.Cause == "success" {
+		case "success":
 			inc++
 		}
 	}

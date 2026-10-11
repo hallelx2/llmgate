@@ -417,7 +417,7 @@ func (j *Judge) Judge(ctx context.Context, req llmgate.JudgeRequest) (res *llmga
 			Cause:    err,
 		}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	tr.StatusCode = resp.StatusCode
 
 	// Bounded: one extra byte past the cap tells us it overflowed rather
@@ -1045,7 +1045,7 @@ var cl100k = sync.OnceValues(func() (*tiktoken.Tiktoken, error) {
 // never required.
 func (j *Judge) Warm(ctx context.Context) error {
 	if j.byteBound && !j.skipGuard {
-		go cl100k() // an error resurfaces on first use
+		go func() { _, _ = cl100k() }() // an error resurfaces on first use
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, j.baseURL+"/", nil)
 	if err != nil {
