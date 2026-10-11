@@ -59,8 +59,23 @@ cost per call, capability flags — baked in rather than bolted on.
 
 ## Status
 
-Early code. Interface is the stable surface; implementations evolve
-underneath. Roadmap lives in [ROADMAP.md](./ROADMAP.md).
+llmgate was built for [Vectorless](https://github.com/hallelx2/vectorless-engine).
+Vectorless's hosted service is closing (decided 2026-10-11); llmgate stays
+open source under Apache 2.0 but is no longer actively developed. Contact:
+halleluyaholudele@gmail.com.
+
+The interface is the stable surface; implementations evolve underneath.
+The latest tag is `v0.5.0`. Roadmap lives in [ROADMAP.md](./ROADMAP.md).
+
+**Known issue on `v0.5.0` and `main` (checked 2026-10-11):** the TypeSafe
+judge's context guard builds a new cl100k tokenizer on every count, about
+256 ms each, and counts the state and every question separately. A
+120-question request spent around 30 s of CPU before it was sent. The fix
+(build the encoder once, decide on byte length first, count long text in
+parallel) is in [PR #19](https://github.com/hallelx2/llmgate/pull/19), which
+is **open and not merged**. Vectorless's engine pins that branch
+(`v0.5.1-0.20260928015141-010e07c576e6`). Measurements:
+[the 2026-09-28 report](https://github.com/hallelx2/vectorless-engine/blob/main/docs/evaluations/2026-09-28-latency-was-our-cpu.md).
 
 **What's in now:**
 
@@ -79,7 +94,7 @@ underneath. Roadmap lives in [ROADMAP.md](./ROADMAP.md).
 
 - Native tool calling (`Request.Tools`, `Response.ToolCalls`) across all three providers
 
-**Coming next:**
+**Planned, not done:**
 
 - Streaming (`Streamer` is declared; no provider implements it yet)
 - Native `count_tokens` via each provider's counting endpoint
@@ -146,7 +161,11 @@ has none of those. Hold a `Client` for work that must produce language, a
 `Judge` for work that must produce a decision, and both when you need
 both.
 
-The first implementation is [TypeSafe](https://docs.typesafe.ai)'s **Jev**.
+The first implementation is [TypeSafe](https://docs.typesafe.ai)'s **Jev**,
+a hosted API. With no `Model` set it uses the `jev-latest` alias. The key
+comes from `TYPESAFE_API_KEY`; reading the base URL and model from the
+environment as well is in [PR #18](https://github.com/hallelx2/llmgate/pull/18),
+open as of 2026-10-11.
 
 ```go
 j, _ := typesafe.New(typesafe.Config{}) // reads TYPESAFE_API_KEY
@@ -203,7 +222,9 @@ request only when an answer decides what evidence to fetch next.
 
 Two limits bound a batch: **64k tokens** for the state plus all questions,
 and **32k** for the state plus the single longest question. The transport
-checks both before sending, so an oversized batch costs nothing.
+checks both before sending, so an oversized batch costs nothing. The check
+counts tokens locally; see the known issue under [Status](#status) for
+what that costs on `v0.5.0`.
 
 ### Three primitives
 
