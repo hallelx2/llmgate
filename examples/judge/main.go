@@ -97,7 +97,8 @@ func main() {
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "judge:", err)
-		os.Exit(1)
+		cancel()
+		os.Exit(1) //nolint:gocritic // cancel already ran; exiting non-zero is the point
 	}
 
 	fmt.Printf("model    %s\n", result.Model)
