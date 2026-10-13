@@ -31,7 +31,7 @@
 
 ## Status
 
-llmgate was built for [Vectorless](https://github.com/hallelx2/vectorless-engine). Vectorless's hosted service has been paused since 12 October 2026. llmgate stays open source under Apache 2.0. Issues and pull requests are read, but replies may be slow. For anything else, write to halleluyaholudele@gmail.com.
+llmgate was built for [Vectorless](https://github.com/hallelx2/vectorless-engine). Vectorless's hosted service has been paused since 12 October 2026, with its data backed up and its infrastructure kept as code so it can come back. llmgate stays open source under Apache 2.0. Development is slow while the service is paused: issues and pull requests are read, but replies may take a while. For anything else, write to halleluyaholudele@gmail.com.
 
 The interface is the stable surface; implementations evolve underneath. The latest tag is `v0.5.0`.
 
