@@ -13,7 +13,7 @@
   <a href="https://pkg.go.dev/github.com/hallelx2/llmgate"><img alt="Go Reference" src="https://pkg.go.dev/badge/github.com/hallelx2/llmgate.svg"/></a>
   <a href="https://github.com/hallelx2/llmgate/releases/tag/v0.5.0"><img alt="Latest tag: v0.5.0" src="https://img.shields.io/badge/tag-v0.5.0-18181b"/></a>
   <a href=".lorx/actions/ci.yml"><img alt="CI: Lorx, bit run --all" src="https://img.shields.io/badge/CI-Lorx%20(bit%20run%20--all)-ff5a00"/></a>
-  <img alt="Status: open source, not maintained" src="https://img.shields.io/badge/status-open%20source%2C%20not%20maintained-lightgrey"/>
+  <img alt="Status: open source" src="https://img.shields.io/badge/status-open%20source-lightgrey"/>
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@
 
 ## Status
 
-llmgate was built for [Vectorless](https://github.com/hallelx2/vectorless-engine). Vectorless's hosted service is closing (decided 2026-10-11). llmgate stays open source under Apache 2.0 but is no longer actively developed. Issues and pull requests may not get a reply. For anything else, write to halleluyaholudele@gmail.com.
+llmgate was built for [Vectorless](https://github.com/hallelx2/vectorless-engine). Vectorless's hosted service has been paused since 12 October 2026, with its data backed up and its infrastructure kept as code so it can come back. llmgate stays open source under Apache 2.0. Development is slow while the service is paused: issues and pull requests are read, but replies may take a while. For anything else, write to halleluyaholudele@gmail.com.
 
 The interface is the stable surface; implementations evolve underneath. The latest tag is `v0.5.0`.
 
@@ -689,6 +689,6 @@ A snapshot read from pkg.go.dev and each project's README on 2026-09-19. The col
 
 ## Contact and license
 
-Open source, not maintained. Write to halleluyaholudele@gmail.com.
+Open source under Apache 2.0. Write to halleluyaholudele@gmail.com.
 
 Apache 2.0. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
