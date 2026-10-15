@@ -123,15 +123,35 @@ That is the whole contract. If a feature does not fit in those two methods, it g
 
 ### Providers
 
-Each provider package is between 53 and 65 lines. It builds a langchaingo model and hands it to `internal/adapter`, the one place where llmgate's `Request` becomes a langchaingo `GenerateContent` call and the reply becomes a `Response`. One adapter serves all three.
+The three langchaingo-backed provider packages are between 53 and 65 lines each. Each builds a langchaingo model and hands it to `internal/adapter`, the one place where llmgate's `Request` becomes a langchaingo `GenerateContent` call and the reply becomes a `Response`. `provider/vertex` is the exception: it speaks the Vertex REST API itself.
 
 | Package | Default model | `BaseURL` | Notes |
 |---|---|---|---|
 | `provider/anthropic` | `claude-sonnet-4-5` | yes | `EnablePromptCache` caches the first user message ([prompt caching](#prompt-caching)) |
 | `provider/openai` | `gpt-4o-mini` | yes | Any OpenAI-compatible API: Azure OpenAI, LM Studio, Ollama's OpenAI endpoint |
 | `provider/gemini` | `gemini-2.5-flash` | no | Authenticates in `New`, bounded by `AuthTimeout` (default 30 s) so construction cannot hang |
+| `provider/vertex` | `gemini-2.5-flash-lite` | tests only | Gemini on Google Cloud Vertex AI over REST, not langchaingo. See [Gemini on Vertex AI](#gemini-on-vertex-ai) |
 
 Every `Config` also has a `ReasoningModel` field. It is stored and not wired to anything; pass `Request.Model` to change model per call.
+
+#### Gemini on Vertex AI
+
+`provider/vertex` calls Gemini through a Google Cloud project, so usage bills to that project and to any credits on its billing account. It talks to the Vertex REST API directly because three things it needs are out of the adapter's reach:
+
+- **Credentials** are Application Default Credentials: a VM's service account, or `gcloud auth application-default login`. `GOOGLE_OAUTH_ACCESS_TOKEN` (a token from `gcloud auth print-access-token`) also works for short sessions. `x-goog-user-project` bills the configured project even when the credentials belong to another.
+- **Thinking** is set per client with `Thinking{Budget: llmgate.Int(0)}` or `Thinking{Level: "low"}`. Gemini 3 bills thinking as output. Not every model can stop: on 2026-10-16 `gemini-3.8-flash` still spent 56 thinking tokens on "17*23" with a budget of 0, while both Flash-Lites spent none.
+- **Usage** comes from `usageMetadata` in full: cached prompt tokens become `CacheReadTokens`, thought tokens are counted in `OutputTokens` and reported as `ReasoningTokens`, and the cost comes from the price book (with the 10% regional uplift Gemini 3 carries off the `global` endpoint).
+
+```go
+c, err := vertex.New(ctx, vertex.Config{
+	Project:  "my-project",            // or GOOGLE_CLOUD_PROJECT
+	Location: "global",                // or a region such as us-central1
+	Model:    "gemini-2.5-flash-lite",
+	Thinking: vertex.Thinking{Budget: llmgate.Int(0)},
+})
+```
+
+Gemini 3 returns a `thoughtSignature` with each function call and rejects the next turn without it. `ToolCall` has no field for it, so the signature travels inside `ToolCall.ID`; echo IDs back unchanged, as a tool loop already does, and the round trip works.
 
 #### Anthropic-compatible gateways and the base URL rules
 
@@ -360,7 +380,7 @@ z-ai/glm-4.6                      -> glm-4.6
 
 #### Where the rates come from
 
-Resolution order is `pricing.Register` overrides, then a remote snapshot if you opted in, then the embedded table, then the hand-maintained System One table.
+Resolution order is `pricing.Register` overrides, then a remote snapshot if you opted in, then the hand-maintained Gemini table, then the embedded table, then the hand-maintained System One table.
 
 - **The embedded table** (`pricing/defaults_gen.go`) is generated from LiteLLM's public price feed by `go generate ./pricing`. The current one was fetched 2026-08-02; `pricing.DefaultsAsOf()` reports that date. When the same model appears from several resellers, the vendor that made it wins.
 - **Live prices are opt-in.** No vendor publishes machine-readable pricing, so `UseRemote` layers a community aggregate over the embedded table: [LiteLLM's price table](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json), then [OpenRouter's model API](https://openrouter.ai/api/v1/models). Importing `pricing` performs no network I/O.
@@ -380,6 +400,7 @@ asOf, source := pricing.AsOf() // vintage of the loaded snapshot
 
 It refreshes every 24 hours by default and fails open at every layer: lookups never wait on the network, a failed fetch keeps the previous snapshot, and a snapshot whose rates moved more than 10x from the embedded values is rejected as a units error rather than adopted.
 
+- **Gemini models newer than the embedded table** are priced in `pricing/google.go`, by hand from Google's Vertex price list (read 2026-10-16). It is consulted before the embedded table, so `gemini-2.5-flash-lite` no longer resolves by prefix to `gemini-2.5-flash` at three times its input rate. Gemini 3.6–3.8 Flash are recorded at their $1.50 / $7.50 list price; the introductory 50% credit-back through 2026-12-31 arrives on a later invoice and is not a lower rate.
 - **System One models** are priced in `pricing/systemone.go`, by hand, because the feeds index only chat-completion models and a generated entry would be wiped by the next `go generate`. It is consulted last, so a feed or `Register` still wins.
 
 ```go

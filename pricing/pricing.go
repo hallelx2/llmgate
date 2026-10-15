@@ -79,6 +79,13 @@ func Lookup(model string) (Price, bool) {
 		}
 	}
 
+	// Gemini models newer than the compiled-in snapshot. Before the
+	// defaults, so a newer ID is not caught by an older model's prefix.
+	// See google.go.
+	if p, ok := lookupGoogle(model); ok {
+		return p, true
+	}
+
 	if p, ok := lookupIn(defaultPrices, model); ok {
 		return p, true
 	}
@@ -280,6 +287,9 @@ func KnownModels() []string {
 		}
 	}
 	for k := range defaultPrices {
+		seen[k] = struct{}{}
+	}
+	for k := range googlePrices {
 		seen[k] = struct{}{}
 	}
 
