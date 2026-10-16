@@ -50,3 +50,19 @@ func TestGoogleTableEntriesAreKnown(t *testing.T) {
 		}
 	}
 }
+
+// A remote snapshot that knows gemini-2.5-flash but not -lite must not
+// price -lite by prefix as Flash.
+func TestRemotePrefixDoesNotMaskGoogleTable(t *testing.T) {
+	remote.Store(&snapshot{prices: map[string]Price{"gemini-2.5-flash": {InputPerMTok: 0.3, OutputPerMTok: 2.5}}})
+	defer remote.Store(nil)
+	p, ok := Lookup("gemini-2.5-flash-lite")
+	if !ok || p.InputPerMTok != 0.10 {
+		t.Errorf("gemini-2.5-flash-lite = %+v (%v), want the $0.10 hand-table rate", p, ok)
+	}
+	// An exact remote entry still wins over the hand table.
+	remote.Store(&snapshot{prices: map[string]Price{"gemini-2.5-flash-lite": {InputPerMTok: 0.11, OutputPerMTok: 0.44}}})
+	if p, _ := Lookup("gemini-2.5-flash-lite"); p.InputPerMTok != 0.11 {
+		t.Errorf("exact remote entry should win, got %+v", p)
+	}
+}

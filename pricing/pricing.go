@@ -73,15 +73,27 @@ func Lookup(model string) (Price, bool) {
 		return p, true
 	}
 
-	if snap := remote.Load(); snap != nil {
-		if p, ok := lookupIn(snap.prices, model); ok {
+	snap := remote.Load()
+	if snap != nil {
+		if p, ok := lookupExact(snap.prices, model); ok {
 			return p, true
 		}
 	}
 
-	// Gemini models newer than the compiled-in snapshot. Before the
-	// defaults, so a newer ID is not caught by an older model's prefix.
+	// Gemini models newer than the compiled-in snapshot, matched exactly
+	// (or canonically) before any prefix match in the snapshot or the
+	// defaults, so a newer ID is not caught by an older model's prefix:
+	// "gemini-2.5-flash-lite" must never resolve to "gemini-2.5-flash".
 	// See google.go.
+	if p, ok := lookupExact(googlePrices, model); ok {
+		return p, true
+	}
+
+	if snap != nil {
+		if p, ok := lookupIn(snap.prices, model); ok {
+			return p, true
+		}
+	}
 	if p, ok := lookupGoogle(model); ok {
 		return p, true
 	}
@@ -114,6 +126,20 @@ func lookupIn(table map[string]Price, model string) (Price, bool) {
 		return Price{}, false
 	}
 	return table[key], true
+}
+
+// lookupExact is lookupIn without the prefix fallback: the raw ID, then
+// its canonical form.
+func lookupExact(table map[string]Price, model string) (Price, bool) {
+	if p, ok := table[model]; ok {
+		return p, true
+	}
+	if canon := Canonical(model); canon != "" {
+		if p, ok := table[canon]; ok {
+			return p, true
+		}
+	}
+	return Price{}, false
 }
 
 // Register overrides or adds a price. Safe for init() in callers.

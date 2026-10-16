@@ -26,12 +26,15 @@ package vertex
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -130,6 +133,11 @@ var _ llmgate.Client = (*Client)(nil)
 func New(ctx context.Context, cfg Config) (*Client, error) {
 	location := firstNonEmpty(cfg.Location, os.Getenv("GOOGLE_CLOUD_LOCATION"), DefaultLocation)
 	project := firstNonEmpty(cfg.Project, os.Getenv("GOOGLE_CLOUD_PROJECT"))
+	// Both are interpolated into the URL the access token is sent to, so
+	// anything but a location or project ID could point it at another host.
+	if !locationRE.MatchString(location) {
+		return nil, fmt.Errorf("llmgate/vertex: location %q is not a Vertex location (global, us-central1, ...)", location)
+	}
 
 	ts := cfg.TokenSource
 	if ts == nil {
@@ -142,7 +150,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		}
 	}
 	if ts == nil {
-		creds, err := google.FindDefaultCredentials(ctx, cloudPlatformScope)
+		creds, err := findCredentials(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("llmgate/vertex: no Application Default Credentials (run `gcloud auth application-default login`, or attach a service account): %w", err)
 		}
@@ -153,6 +161,9 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	}
 	if project == "" {
 		return nil, errors.New("llmgate/vertex: no project: set Config.Project or GOOGLE_CLOUD_PROJECT")
+	}
+	if !projectRE.MatchString(project) {
+		return nil, fmt.Errorf("llmgate/vertex: project %q is not a Google Cloud project ID", project)
 	}
 	if cfg.Thinking.Budget != nil && cfg.Thinking.Level != "" {
 		return nil, errors.New("llmgate/vertex: set Thinking.Budget or Thinking.Level, not both")
@@ -172,11 +183,17 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		base = endpointRoot(location)
 	}
 
+	thinking := cfg.Thinking
+	if thinking.Budget != nil {
+		b := *thinking.Budget
+		thinking.Budget = &b
+	}
+
 	return &Client{
 		project:  project,
 		location: location,
 		model:    firstNonEmpty(cfg.Model, DefaultModel),
-		thinking: cfg.Thinking,
+		thinking: thinking,
 		ts:       oauth2.ReuseTokenSource(nil, ts),
 		http:     httpClient,
 		baseURL:  base,
@@ -291,6 +308,7 @@ func (c *Client) toResponse(model string, wire generateResponse) (*llmgate.Respo
 			Message: "vertex: response has no candidates"}
 	}
 	cand := wire.Candidates[0]
+	nonce := newNonce()
 
 	out := &llmgate.Response{Model: firstNonEmpty(wire.ModelVersion, model), FinishReason: cand.FinishReason}
 	var text, thoughts strings.Builder
@@ -302,7 +320,7 @@ func (c *Client) toResponse(model string, wire generateResponse) (*llmgate.Respo
 				args = json.RawMessage("{}")
 			}
 			out.ToolCalls = append(out.ToolCalls, llmgate.ToolCall{
-				ID:    encodeCallID(p.FunctionCall.ID, i, p.ThoughtSignature),
+				ID:    encodeCallID(p.FunctionCall.ID, nonce, i, p.ThoughtSignature),
 				Name:  p.FunctionCall.Name,
 				Input: []byte(args),
 			})
@@ -381,6 +399,41 @@ func regionalUplift(model, location string) float64 {
 		return 1.1
 	}
 	return 1
+}
+
+var (
+	// locationRE matches "global" and region names such as us-central1.
+	locationRE = regexp.MustCompile(`^[a-z][a-z0-9-]{1,62}$`)
+	// projectRE matches Google Cloud project IDs (and the domain-scoped
+	// "example.com:my-project" form).
+	projectRE = regexp.MustCompile(`^([a-z0-9.-]+:)?[a-z][a-z0-9-]{4,61}[a-z0-9]$`)
+)
+
+// findCredentials runs the Application Default Credentials search under a
+// background context, so the token source it returns keeps refreshing after
+// ctx ends, while still returning when ctx does.
+func findCredentials(ctx context.Context) (*google.Credentials, error) {
+	type result struct {
+		creds *google.Credentials
+		err   error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		c, err := google.FindDefaultCredentials(context.Background(), cloudPlatformScope)
+		ch <- result{c, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.creds, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func newNonce() string {
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	return base64.RawURLEncoding.EncodeToString(b[:])
 }
 
 func firstNonEmpty(vals ...string) string {

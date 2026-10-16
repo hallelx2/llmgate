@@ -345,7 +345,7 @@ func TestConfigValidation(t *testing.T) {
 }
 
 func TestCallIDCodec(t *testing.T) {
-	id := encodeCallID("call_1", 2, "a/b+c==")
+	id := encodeCallID("call_1", "n0nce", 2, "a/b+c==")
 	if strings.ContainsAny(id, "/+") {
 		t.Errorf("encoded id %q should be URL-safe", id)
 	}
@@ -355,5 +355,67 @@ func TestCallIDCodec(t *testing.T) {
 	}
 	if v, s := decodeCallID("caller-made-id"); v != "caller-made-id" || s != "" {
 		t.Errorf("a foreign id should pass through unchanged, got %q %q", v, s)
+	}
+}
+
+func TestCallIDsDifferAcrossResponses(t *testing.T) {
+	body := `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"grep","args":{}}}]},"finishReason":"STOP"}]}`
+	f := &fakeVertex{body: body}
+	c := newTestClient(t, f, Config{})
+	req := llmgate.Request{Messages: []llmgate.Message{{Role: llmgate.RoleUser, Content: "x"}}, Tools: []llmgate.ToolDef{{Name: "grep"}}}
+	a, err := c.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := c.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ToolCalls[0].ID == b.ToolCalls[0].ID {
+		t.Errorf("two responses with no Vertex ID or signature produced the same call ID %q", a.ToolCalls[0].ID)
+	}
+}
+
+func TestLocationAndProjectAreValidated(t *testing.T) {
+	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "x"})
+	for _, loc := range []string{"attacker.example/", "us-central1.evil.com", "UPPER", ""} {
+		if loc == "" {
+			continue
+		}
+		if _, err := New(context.Background(), Config{TokenSource: ts, Project: "my-project", Location: loc}); err == nil {
+			t.Errorf("location %q accepted; it is interpolated into the host the token goes to", loc)
+		}
+	}
+	if _, err := New(context.Background(), Config{TokenSource: ts, Project: "evil.com/x", Location: "global"}); err == nil {
+		t.Error("a project with a path accepted")
+	}
+	for _, loc := range []string{"global", "us-central1", "europe-west4"} {
+		if _, err := New(context.Background(), Config{TokenSource: ts, Project: "vectorless-prod", Location: loc}); err != nil {
+			t.Errorf("location %q rejected: %v", loc, err)
+		}
+	}
+}
+
+func TestThinkingBudgetIsCopied(t *testing.T) {
+	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "x"})
+	budget := 0
+	c, err := New(context.Background(), Config{TokenSource: ts, Project: "my-project", Thinking: Thinking{Budget: &budget}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget = 9000
+	if *c.thinking.Budget != 0 {
+		t.Errorf("client budget followed the caller's variable to %d", *c.thinking.Budget)
+	}
+}
+
+// Measured 2026-10-16 on gemini-3.8-flash: promptTokenCount 14,
+// candidatesTokenCount 3, thoughtsTokenCount 56, totalTokenCount 73.
+// 14 + 3 + 56 = 73, so thoughts are NOT inside candidates and adding them
+// is correct.
+func TestThoughtsAreSeparateFromCandidates(t *testing.T) {
+	u := usageFor("gemini-3.8-flash", "gemini-3.8-flash", "global", &usageMetadata{PromptTokenCount: 14, CandidatesTokenCount: 3, ThoughtsTokenCount: 56, TotalTokenCount: 73})
+	if u.InputTokens+u.OutputTokens != u.TotalTokens {
+		t.Errorf("input %d + output %d != total %d", u.InputTokens, u.OutputTokens, u.TotalTokens)
 	}
 }

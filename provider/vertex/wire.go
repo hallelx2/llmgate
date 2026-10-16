@@ -256,15 +256,17 @@ func toolResult(s string) map[string]any {
 
 // Call IDs carry Gemini 3's thoughtSignature across the round trip:
 //
-//	vtx1.<vertex call id>.<index>.<base64url signature>
+//	vtx1.<vertex call id>.<response nonce>.<index>.<base64url signature>
 //
 // The signature is already base64 from Vertex; re-encoding as base64url
-// keeps the ID free of '/' and '+'. An ID that does not start with the
+// keeps the ID free of '/' and '+'. The nonce is per response, so calls in
+// different responses never share an ID even when Vertex sends neither an
+// ID nor a signature. An ID that does not start with the
 // prefix (one a caller made up) decodes to itself with no signature.
 const callIDPrefix = "vtx1."
 
-func encodeCallID(vertexID string, index int, signature string) string {
-	return callIDPrefix + base64.RawURLEncoding.EncodeToString([]byte(vertexID)) + "." +
+func encodeCallID(vertexID, nonce string, index int, signature string) string {
+	return callIDPrefix + base64.RawURLEncoding.EncodeToString([]byte(vertexID)) + "." + nonce + "." +
 		strconv.Itoa(index) + "." + base64.RawURLEncoding.EncodeToString([]byte(signature))
 }
 
@@ -273,12 +275,12 @@ func decodeCallID(id string) (vertexID, signature string) {
 	if !ok {
 		return id, ""
 	}
-	fields := strings.SplitN(rest, ".", 3)
-	if len(fields) != 3 {
+	fields := strings.SplitN(rest, ".", 4)
+	if len(fields) != 4 {
 		return id, ""
 	}
 	v, err1 := base64.RawURLEncoding.DecodeString(fields[0])
-	s, err2 := base64.RawURLEncoding.DecodeString(fields[2])
+	s, err2 := base64.RawURLEncoding.DecodeString(fields[3])
 	if err1 != nil || err2 != nil {
 		return id, ""
 	}

@@ -140,6 +140,7 @@ Every `Config` also has a `ReasoningModel` field. It is stored and not wired to 
 
 - **Credentials** are Application Default Credentials: a VM's service account, or `gcloud auth application-default login`. `GOOGLE_OAUTH_ACCESS_TOKEN` (a token from `gcloud auth print-access-token`) also works for short sessions. `x-goog-user-project` bills the configured project even when the credentials belong to another.
 - **Thinking** is set per client with `Thinking{Budget: llmgate.Int(0)}` or `Thinking{Level: "low"}`. Gemini 3 bills thinking as output. Not every model can stop: on 2026-10-16 `gemini-3.8-flash` still spent 56 thinking tokens on "17*23" with a budget of 0, while both Flash-Lites spent none.
+- **`CountTokens`** calls Vertex's `countTokens` endpoint, so the count is the model's own, not a local tokenizer's estimate.
 - **Usage** comes from `usageMetadata` in full: cached prompt tokens become `CacheReadTokens`, thought tokens are counted in `OutputTokens` and reported as `ReasoningTokens`, and the cost comes from the price book (with the 10% regional uplift Gemini 3 carries off the `global` endpoint).
 
 ```go
